@@ -28,7 +28,34 @@ P_up = Φ( (L + μ·τ) / (σ·√τ) )      L = ln(S / S_open),  τ = seconds t
   depth liquidity gates, VPIN/vol gates, no taker entries in the final `NO_TAKER_LAST_S` seconds.
 - **Sizing:** fractional Kelly (`k=0.15`) with a per-trade cap and an aggregate (correlation) cap.
 
-## Quick start
+## Deploy to a VPS (e.g. Dublin)
+
+Paper mode is the **only** mode — there is no live-trading code, no API keys, no real orders.
+
+**One command (Docker, recommended):** on the VPS run
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jim7907/NewPoly/claude/crypto-polymarket-imbalance-bot-JoCou/crypto15m/deploy.sh | bash
+```
+or manually:
+```bash
+git clone https://github.com/Jim7907/NewPoly.git
+cd NewPoly && git checkout claude/crypto-polymarket-imbalance-bot-JoCou
+cd crypto15m && docker compose up --build -d
+```
+Then open `http://<vps-ip>:3002` and click **RUN** on the BACKTEST tab to auto-tune thresholds.
+
+**Without Docker (systemd):**
+```bash
+cd NewPoly/crypto15m && npm install && npm run build
+sudo cp systemd/crypto15m.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now crypto15m
+```
+
+Open port **3002** in the VPS firewall (and ideally put it behind nginx/Caddy with TLS).
+Re-run `deploy.sh` any time to pull the latest and rebuild. Data persists in the `crypto15m_data`
+Docker volume (or `crypto15m/data/` for the systemd path).
+
+## Quick start (local)
 
 ```bash
 cp .env.example .env

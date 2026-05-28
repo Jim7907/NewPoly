@@ -1,0 +1,26 @@
+# Non-Docker deployment. Install:
+#   sudo cp crypto15m/systemd/crypto15m.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now crypto15m
+# Adjust User/WorkingDirectory to match where you cloned the repo.
+[Unit]
+Description=15m Crypto Imbalance Bot (Polymarket, paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/NewPoly/crypto15m
+Environment=NODE_ENV=production
+Environment=PORT=3002
+Environment=DB_PATH=/root/NewPoly/crypto15m/data
+Environment=ASSETS=BTC,ETH,SOL,XRP,DOGE
+Environment=DRIFT_ENABLED=false
+# Build the frontend once, then run the server.
+ExecStartPre=/usr/bin/env bash -lc 'cd /root/NewPoly/crypto15m && npm install && npm run build'
+ExecStart=/usr/bin/env node server/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

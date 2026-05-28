@@ -1,0 +1,27 @@
+services:
+  crypto15m:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crypto15m
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - DB_PATH=/app/data
+      - ASSETS=BTC,ETH,SOL,XRP,DOGE
+      - DRIFT_ENABLED=false      # lead-only model (paper mode is the only mode)
+      - SCAN_MS=5000
+    volumes:
+      - crypto15m_data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  crypto15m_data:
+    driver: local
