@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SafeCam</string>
+
+    <string name="status_idle">Idle — not recording</string>
+    <string name="status_recording">Recording (running in background)</string>
+    <string name="status_need_camera">Camera permission is required to record</string>
+
+    <string name="disclosure">This app shows a permanent notification and the system camera indicator while recording. Use it only in your own spaces and where recording is legal.</string>
+
+    <string name="opt_night">Night mode (boost low-light exposure)</string>
+    <string name="opt_torch">Use torch/flashlight in night mode</string>
+    <string name="opt_audio">Record audio</string>
+    <string name="opt_front">Use front camera</string>
+    <string name="opt_boot">Auto-start recording after reboot</string>
+
+    <string name="action_start">Start recording</string>
+    <string name="action_stop">Stop</string>
+
+    <string name="channel_name">Recording</string>
+    <string name="channel_desc">Shown while SafeCam is recording in the background</string>
+    <string name="notif_title">SafeCam is recording</string>
+    <string name="notif_text">Tap to open. Recording continues in the background.</string>
+
+    <string name="error_missing_permissions">Camera permission not granted</string>
+    <string name="error_camera_start">Could not start the camera</string>
+</resources>
