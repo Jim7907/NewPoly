@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Embers",
+    "slug": "embers",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0d0b0f",
+    "splash": {
+      "backgroundColor": "#0d0b0f"
+    },
+    "platforms": ["ios", "android", "web"],
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Embers needs access to your photos so you can release them into the wild.",
+          "cameraPermission": "Embers needs your camera to capture new embers."
+        }
+      ]
+    ]
+  }
+}
