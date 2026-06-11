@@ -1,5 +1,7 @@
 # Polymarket Weather Arbitrage Bot
 
+> Also in this repo: [🔥 Embers](embers/CONCEPT.md) — ephemeral social app concept + Expo prototype (photos that die unless friends keep them alive).
+
 Compares ECMWF + NOAA GFS + DWD ICON weather ensemble against live Polymarket prices
 at exact resolution station coordinates (not city centroids).
 
