@@ -1,0 +1,16 @@
+services:
+  breakout:
+    build: .
+    container_name: breakout-lab
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - CACHE_DIR=/app/data
+    volumes:
+      - breakout_data:/app/data
+
+volumes:
+  breakout_data:
