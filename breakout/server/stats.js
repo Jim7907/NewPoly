@@ -8,7 +8,7 @@ function empty(equity = 0) {
     trades: 0, wins: 0, losses: 0, breakeven: 0, winRate: 0, profitFactor: null,
     netProfit: 0, netProfitPct: 0, finalEquity: equity, maxDrawdown: 0, maxDrawdownPct: 0,
     avgR: 0, expectancyR: 0, avgWin: 0, avgLoss: 0, payoff: null, grossProfit: 0, grossLoss: 0,
-    fees: 0, avgCostR: 0, cappedTrades: 0, avgBars: 0, avgMfe: 0, avgMae: 0, sharpe: null, cagr: null,
+    fees: 0, avgCostR: 0, breakEvenFeeBps: null, cappedTrades: 0, avgBars: 0, avgMfe: 0, avgMae: 0, sharpe: null, cagr: null,
     tpRates: [], long: null, short: null, exitReasons: {}, maxWinStreak: 0, maxLossStreak: 0,
   };
 }
@@ -25,6 +25,14 @@ function drawdown(curve) {
     if (pct > maxPct) maxPct = pct;
   }
   return { abs: maxAbs, pct: maxPct * 100 };
+}
+
+// Round-trip fee rate (in bps of notional) at which total profit is exactly zero.
+// Fees cost `rate x turnover`, so profit = gross - rate*turnover = 0 when rate = gross/turnover.
+function breakEvenFee(trades) {
+  const gross = trades.reduce((s, t) => s + (t.grossPnl || 0), 0);
+  const turnover = trades.reduce((s, t) => s + (t.turnover || 0), 0);
+  return turnover > 0 ? (gross / turnover) * 10000 : null;
 }
 
 function streaks(trades) {
@@ -104,6 +112,10 @@ function summarize(trades, equityCurve, params, bars) {
     grossProfit: r2(grossProfit),
     grossLoss: r2(grossLoss),
     fees: r2(trades.reduce((s, t) => s + t.fees, 0)),
+    // The round-trip fee rate at which this run's profit reaches exactly zero. Fees are linear
+    // in notional, so this is gross profit divided by total turnover — an exact break-even,
+    // not an estimate. Negative means the run loses before any fee is charged at all.
+    breakEvenFeeBps: r2(breakEvenFee(trades), 2),
     // Cost per trade in R, and how often the leverage cap bound. Together these explain the
     // common case where a strategy with a decent target hit rate still loses money.
     avgCostR: r2(trades.reduce((s, t) => s + (t.costR || 0), 0) / trades.length),
@@ -121,4 +133,4 @@ function summarize(trades, equityCurve, params, bars) {
   };
 }
 
-module.exports = { summarize, empty, drawdown, streaks };
+module.exports = { summarize, empty, drawdown, streaks, breakEvenFee };

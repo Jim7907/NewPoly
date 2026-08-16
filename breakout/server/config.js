@@ -103,8 +103,14 @@ const DEFAULT_PARAMS = {
   equity: 10000,
   riskPct: 1.0,            // % of equity risked per trade (entry→stop distance)
   maxLeverage: 5,          // notional cap, so a very tight stop cannot imply an absurd size
-  feeBps: 10,              // per fill, each side
-  slipBps: 2,              // entry + exit slippage
+
+  // Fees are split by how the order actually fills, which matters enormously intraday:
+  // a retest entry and a take-profit are LIMIT orders (maker), while a next-bar-open entry
+  // and any stop are MARKET orders (taker, and they pay slippage too). Setting `feeBps`
+  // alone still works and applies to both.
+  feeBpsTaker: 10,         // market fills: next-open/close entries, stops, time exits
+  feeBpsMaker: 2,          // limit fills: retest entries, take-profit exits
+  slipBps: 2,              // market fills only — a limit order fills at its price or better
   pessimisticFills: true,  // if a bar touches both stop and target, assume the stop first
 };
 

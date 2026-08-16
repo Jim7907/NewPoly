@@ -239,3 +239,46 @@ test("a position with no static targets is still fully closed out", () => {
   }
   assert.deepEqual(res.stats.tpRates, [], "and the panel has no target rows to show");
 });
+
+test("limit fills pay maker fees, market fills pay taker", () => {
+  const bars = frame([
+    { o: 103, h: 104, l: 103, c: 103.5 },
+    { o: 103, h: 103.5, l: 100.5, c: 102 },   // retest fills the limit at the 101 level
+    { o: 102, h: 115, l: 101, c: 114 },       // then runs to TP1 (a limit) and beyond
+  ]);
+  const p = withDefaults({ ...LADDER, entryMode: "retest", retestBars: 3, riskPct: 1, equity: 10000,
+    feeBpsMaker: 0, feeBpsTaker: 100, slipBps: 0 });
+  const t = backtest.simulateTrade(bars, buildSeries(bars, p), sig(30), p, 10000);
+  assert.equal(t.entryIsMaker, true, "a retest entry rests a limit order");
+  // Entry and the TP exits are all maker at 0bps here; only a market exit could charge anything.
+  const takerExits = t.exits.filter(e => !e.reason.startsWith("tp"));
+  if (!takerExits.length) assert.equal(t.fees, 0, "an all-limit round trip pays no maker fee at 0bps");
+
+  const market = withDefaults({ ...LADDER, entryMode: "nextOpen", riskPct: 1, equity: 10000,
+    feeBpsMaker: 0, feeBpsTaker: 100, slipBps: 0 });
+  const m = backtest.simulateTrade(bars, buildSeries(bars, market), sig(30), market, 10000);
+  assert.equal(m.entryIsMaker, false);
+  assert.ok(m.fees > 0, "crossing the spread on entry costs the taker rate");
+});
+
+test("a single feeBps still sets both sides, so old configs keep working", () => {
+  const p = withDefaults({ feeBps: 7 });
+  assert.equal(p.feeBpsMaker, 7);
+  assert.equal(p.feeBpsTaker, 7);
+  const split = withDefaults({ feeBps: 7, feeBpsMaker: 1 });
+  assert.equal(split.feeBpsMaker, 1, "an explicit maker rate wins");
+  assert.equal(split.feeBpsTaker, 7);
+});
+
+test("break-even fee is the rate at which profit reaches exactly zero", () => {
+  const bars = synthetic("BTC-USD", "1d", 900, 4);
+  const free = backtest.run(bars, { feeBpsMaker: 0, feeBpsTaker: 0, slipBps: 0 });
+  const be = free.stats.breakEvenFeeBps;
+  assert.ok(be != null);
+  // Charging exactly that rate on both sides should leave net profit at ~0.
+  const at = backtest.run(bars, { feeBps: be, slipBps: 0 });
+  assert.ok(Math.abs(at.stats.netProfit) < Math.abs(free.stats.netProfit) * 0.05 + 1,
+    `expected ~zero net at the break-even fee, got ${at.stats.netProfit}`);
+  const under = backtest.run(bars, { feeBps: be * 0.5, slipBps: 0 });
+  assert.ok(under.stats.netProfit > at.stats.netProfit, "cheaper fees must leave more profit");
+});

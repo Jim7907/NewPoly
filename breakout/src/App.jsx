@@ -78,7 +78,10 @@ function StatsPanel({ stats, curve }) {
         <Stat label="MAX DD" value={`${n2(s.maxDrawdownPct, 1)}%`} color={C.rose} sub={`$${n0(s.maxDrawdown)}`} />
         <Stat label="SHARPE" value={n2(s.sharpe)} color={C.blue} sub={s.cagr != null ? `CAGR ${n2(s.cagr, 1)}%` : null} />
         <Stat label="COST / TRADE" value={`${n2(s.avgCostR)}R`} color={s.avgCostR >= 0.25 ? C.amber : C.dim}
-          sub={`$${n0(s.fees)} total${s.cappedTrades ? ` · ${s.cappedTrades} size-capped` : ""}`} />
+          sub={`$${n0(s.fees)} total${s.cappedTrades ? ` \u00b7 ${s.cappedTrades} size-capped` : ""}`} />
+        <Stat label="BREAK-EVEN FEE" value={s.breakEvenFeeBps == null ? "--" : `${n2(s.breakEvenFeeBps, 1)}bp`}
+          color={(s.breakEvenFeeBps ?? -1) <= 0 ? C.down : (s.breakEvenFeeBps < 5 ? C.amber : C.up)}
+          sub={(s.breakEvenFeeBps ?? -1) <= 0 ? "loses before fees" : "max round-trip cost"} />
       </div>
 
       {s.avgCostR >= 0.25 && (
@@ -455,8 +458,12 @@ export default function App() {
         <Section title="ACCOUNT">
           <Field label="equity $" value={params.equity} step={1000} onChange={v => set("equity", v)} />
           <Field label="risk % / trade" value={params.riskPct} step={0.25} onChange={v => set("riskPct", v)} />
-          <Field label="fee bps / fill" value={params.feeBps} step={1} onChange={v => set("feeBps", v)} />
-          <Field label="slippage bps" value={params.slipBps} step={1} onChange={v => set("slipBps", v)} />
+          <Field label="taker fee bps" value={params.feeBpsTaker} step={1} onChange={v => set("feeBpsTaker", v)}
+            hint="Market fills: next-open/close entries, stops, time exits" />
+          <Field label="maker fee bps" value={params.feeBpsMaker} step={1} onChange={v => set("feeBpsMaker", v)}
+            hint="Limit fills: retest entries and take-profit exits" />
+          <Field label="slippage bps" value={params.slipBps} step={1} onChange={v => set("slipBps", v)}
+            hint="Market fills only — a limit order fills at its price or better" />
           <Toggle label="pessimistic fills" value={params.pessimisticFills} onChange={v => set("pessimisticFills", v)} hint="Ambiguous bars resolve stop-first" />
         </Section>
 

@@ -19,6 +19,10 @@ const withDefaults = (p = {}) => {
   // so only a missing tpR falls back to the default ladder.
   merged.tpR = Array.isArray(p.tpR) ? p.tpR.map(Number) : DEFAULT_PARAMS.tpR;
   merged.tpAlloc = normalizeAlloc(p.tpAlloc, merged.tpR.length);
+  // A single `feeBps` sets both sides, so older callers and simple "what if fees were X"
+  // sweeps keep working; the split values win when given explicitly.
+  merged.feeBpsTaker = p.feeBpsTaker ?? p.feeBps ?? DEFAULT_PARAMS.feeBpsTaker;
+  merged.feeBpsMaker = p.feeBpsMaker ?? p.feeBps ?? DEFAULT_PARAMS.feeBpsMaker;
   return merged;
 };
 

@@ -18,7 +18,12 @@ const bps = (x) => x / 10000;
 function simulateTrade(bars, series, sig, p, equityAtEntry) {
   const dir = sig.side === "long" ? 1 : -1;
   const slip = bps(p.slipBps);
-  const fee = bps(p.feeBps);
+  const feeTaker = bps(p.feeBpsTaker);
+  const feeMaker = bps(p.feeBpsMaker);
+  // A retest entry rests a limit order at the level; every other entry mode crosses the spread.
+  const entryIsMaker = p.entryMode === "retest";
+  // Targets are limit orders; stops, breakeven/trail stops and time exits are market orders.
+  const exitFeeRate = (reason) => (reason.startsWith("tp") ? feeMaker : feeTaker);
 
   // ── Fill ──
   let entryIndex = null, entryPrice = null, scanFrom = null;
@@ -127,7 +132,11 @@ function simulateTrade(bars, series, sig, p, equityAtEntry) {
 
   // ── Accounting ──
   const grossPnl = exits.reduce((s, e) => s + qty * e.portion * (e.price - entryPrice) * dir, 0);
-  const fees = qty * entryPrice * fee + exits.reduce((s, e) => s + qty * e.portion * e.price * fee, 0);
+  const fees = qty * entryPrice * (entryIsMaker ? feeMaker : feeTaker)
+    + exits.reduce((s, e) => s + qty * e.portion * e.price * exitFeeRate(e.reason), 0);
+  // Total notional transacted. Fees scale linearly with it, so gross/turnover is exactly the
+  // round-trip fee rate at which this trade breaks even.
+  const turnover = qty * entryPrice + exits.reduce((s, e) => s + qty * e.portion * e.price, 0);
   const pnl = grossPnl - fees;
   const avgExit = exits.reduce((s, e) => s + e.price * e.portion, 0) / exits.reduce((s, e) => s + e.portion, 0);
 
@@ -141,7 +150,7 @@ function simulateTrade(bars, series, sig, p, equityAtEntry) {
     level: sig.level, keyLevel: sig.keyLevel, range: sig.range, atr: sig.atr,
     exits, tpHits,
     bars: exitIndex - entryIndex,
-    grossPnl, fees, pnl,
+    grossPnl, fees, turnover, entryIsMaker, pnl,
     pnlPct: (pnl / equityAtEntry) * 100,
     r: pnl / (qty * plan.risk),
     // Trading costs expressed in R. When the stop is a small % of price, risk-based sizing

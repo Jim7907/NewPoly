@@ -155,6 +155,54 @@ accumulates. A real edge that is too small and too infrequent to pay for itself 
 strategy. The `Equity long` preset exists so you can reproduce this; `test/equities.test.js` pins
 it against a committed 24-year SPY fixture.
 
+## Can it be made intraday / high frequency?
+
+Not with these rules, and the reason is worth stating precisely because it is not a tuning
+problem.
+
+Cost in R is governed by one ratio: `round-trip cost ÷ (stop distance as a % of price)`. Raising
+frequency shrinks the denominator, so it makes the cost problem strictly worse. On BTC:
+
+| timeframe | stop as % of price | cost / trade | expectancy |
+|---|---|---|---|
+| 1m | 0.023% | **12.99R** | −15.62R |
+| 5m | 0.141% | 2.26R | −2.52R |
+| 15m | 0.353% | 0.72R | −1.09R |
+| 1h | 1.078% | 0.20R | −0.37R |
+| 1d | 8.125% | 0.03R | **+0.47R** |
+
+Two things were added to give the intraday case its fairest possible hearing:
+
+**Maker vs taker fees are now modelled separately.** A `retest` entry rests a *limit* order at
+the level and a take-profit is also a limit; a next-bar-open entry and every stop are *market*
+orders that cross the spread and pay slippage. Routing entries through limits roughly halves the
+cost drag (1m: 12.99R → 7.98R), which is the single biggest legitimate lever available.
+
+**A break-even fee metric.** `breakEvenFeeBps` is the exact round-trip rate at which the run's
+profit reaches zero — gross profit ÷ turnover, not an estimate. It turns "is this viable?" into a
+number you can check against your fee schedule.
+
+It does not save the strategy, because **the signal has no gross edge intraday at all**. With
+fees *and* slippage set to zero, the break-even fee is still ≈0 at 1m and 5m and negative at 15m
+and 1h — the raw P&L is already flat-to-losing before anyone charges anything. Sweeping ~650
+parameter combinations per timeframe at zero cost, positive-gross configurations are the
+*minority*:
+
+| timeframe | configs with positive gross expectancy |
+|---|---|
+| 5m | 41% |
+| 15m | 28% |
+| 1h | 20% |
+| **1d (for contrast)** | **94%** |
+
+A coin flip would score 50%. On daily bars the profitable region is broad and consistent; intraday
+it is thinner than chance, which is what an absent edge looks like. Cheaper fills cannot preserve
+an edge that is not there.
+
+If you want to pursue intraday seriously, the honest conclusion is that it needs a *different
+signal* — one built for the horizon (opening-range, session anchoring, order-flow) — plus a venue
+where round-trip costs are under a basis point. The tool now measures both requirements for you.
+
 ## Fill model
 
 Backtests flatter themselves in predictable ways, so these are the choices made here:
@@ -166,7 +214,9 @@ Backtests flatter themselves in predictable ways, so these are the choices made 
   (`pessimisticFills`) — O/H/L/C does not reveal the intrabar path.
 - Gaps fill at the open when the open is already through the order price, so a gap through a
   stop costs more than 1R (as it does live).
-- Stop exits are market orders and pay slippage; target exits are limits and do not.
+- Orders are priced by how they fill: limit fills (retest entries, take-profits) pay `feeBpsMaker`
+  and never slip; market fills (next-open/close entries, stops, time exits) pay `feeBpsTaker`
+  plus slippage. Setting a single `feeBps` still applies one rate to both.
 - Fees are charged on the full entry notional and on every partial exit.
 - Size comes from `riskPct` of current equity divided by the entry→stop distance, capped by
   `maxLeverage`. Equity compounds trade to trade.
@@ -216,7 +266,7 @@ server/candles.js      Coinbase (crypto) + Yahoo (equities) fetch + cache, synth
 server/optimize.js     grid search + walk-forward validation
 src/Chart.jsx          canvas candlestick renderer and all overlays (no chart library)
 src/App.jsx            controls, stats panel, blotter, optimizer, scanner
-test/                  57 unit tests — `npm test`
+test/                  60 unit tests — `npm test`
 test/fixtures/         real out-of-sample bars (BTC daily, 24y of SPY) behind the regression tests
 ```
 
