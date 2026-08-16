@@ -16,9 +16,16 @@ function frame(after) {
   return [...pre, ...after.map((b, k) => ({ t: (30 + k) * 900, v: 100, ...b }))];
 }
 
+// These exercise the scale-out ladder, so they state that configuration explicitly rather than
+// inheriting whatever the shipped defaults happen to be (which is the runner exit).
 // slBufferAtr 0 puts the stop exactly on the broken level (101), so with an entry at 105 the
 // risk is a round 4.00 and the targets land on 109 / 113 / 117 / 125.
-const P = (over = {}) => withDefaults({ feeBps: 0, slipBps: 0, riskPct: 1, equity: 10000, slBufferAtr: 0, ...over });
+const LADDER = {
+  slMode: "level", slBufferAtr: 0,
+  tpR: [1, 2, 3, 5], tpAlloc: [0.5, 0.25, 0.15, 0.10],
+  beAfterTp1: true, trailAfterTp: 2, trailAtrMult: 2,
+};
+const P = (over = {}) => withDefaults({ feeBps: 0, slipBps: 0, riskPct: 1, equity: 10000, ...LADDER, ...over });
 
 test("entry fills at the next bar's open by default", () => {
   const bars = frame([
@@ -36,7 +43,7 @@ test("entry fills at the next bar's open by default", () => {
 });
 
 test("targets fill in order and the remainder times out", () => {
-  const p = P({ trailAfterTp: 0, maxBars: 5 });
+  const p = P({ trailAtrMult: 0, maxBars: 5 });
   const bars = frame([
     { o: 103, h: 104, l: 103, c: 103.5 },
     { o: 105, h: 108, l: 104.5, c: 107 },     // entry 105 — TP1 (109) not reached yet
@@ -56,7 +63,7 @@ test("targets fill in order and the remainder times out", () => {
 });
 
 test("breakeven stop engages after TP1", () => {
-  const p = P({ beAfterTp1: true, trailAfterTp: 0 });
+  const p = P({ beAfterTp1: true, trailAtrMult: 0 });
   const bars = frame([
     { o: 103, h: 104, l: 103, c: 103.5 },
     { o: 105, h: 110, l: 104.5, c: 109.5 },   // TP1 at 109 fills
@@ -104,7 +111,7 @@ test("shorts mirror longs", () => {
     { o: 94, h: 94, l: 90, c: 90.5 },         // TP1 91 fills, TP2 87 does not
     { o: 90, h: 96, l: 90, c: 95.5 },         // rips back through the breakeven stop
   ]);
-  const p = P({ trailAfterTp: 0 });
+  const p = P({ trailAtrMult: 0 });
   const t = backtest.simulateTrade(bars, buildSeries(bars, p), sig(30, "short"), p, 10000);
   assert.equal(t.entryPrice, 95);
   assert.equal(t.sl, 99);
@@ -195,4 +202,40 @@ test("the result reports a bar COUNT, so it can be merged with the bar array ser
   const res = backtest.run(bars, {});
   assert.equal(res.barCount, 400);
   assert.equal(res.bars, undefined, "a `bars` field here would clobber the array in the API response");
+});
+
+test("trail semantics: trailAtrMult 0 disables it, trailAfterTp 0 arms it from entry", () => {
+  const bars = frame([
+    { o: 103, h: 104, l: 103, c: 103.5 },
+    { o: 105, h: 112, l: 104.5, c: 111 },     // runs up, setting the trail's high-water mark
+    { o: 111, h: 111.5, l: 104, c: 105 },     // gives back more than 3 ATR from the high
+    { o: 105, h: 106, l: 104, c: 105 },
+  ]);
+  const off = P({ tpR: [], tpAlloc: [], trailAtrMult: 0 });
+  const on = P({ tpR: [], tpAlloc: [], trailAfterTp: 0, trailAtrMult: 3 });
+
+  const a = backtest.simulateTrade(bars, buildSeries(bars, off), sig(30), off, 10000);
+  assert.equal(a.exitReason, "eod", "with no targets and no trail, only the stop or the clock exits");
+
+  const b = backtest.simulateTrade(bars, buildSeries(bars, on), sig(30), on, 10000);
+  assert.equal(b.exitReason, "trail");
+  assert.ok(b.exitIndex < a.exitIndex, "the trail gets out earlier than holding to the clock");
+  // Exit sits a trail width below the high-water mark, not at the original stop. The width uses
+  // the ATR of the bar where the trail was last moved — a stop cannot use its own bar's ATR.
+  const atrWhenSet = buildSeries(bars, on).atr[b.exitIndex - 1];
+  assert.ok(Math.abs(b.exits[0].price - (112 - 3 * atrWhenSet)) < 1e-6,
+    `exit ${b.exits[0].price} vs expected ${112 - 3 * atrWhenSet}`);
+  assert.ok(b.exits[0].price > b.sl, "and well above the structural stop it replaced");
+});
+
+test("a position with no static targets is still fully closed out", () => {
+  const bars = synthetic("BTC-USD", "1d", 600, 9);
+  const res = backtest.run(bars, { tpR: [], tpAlloc: [], trailAfterTp: 0, trailAtrMult: 3 });
+  assert.ok(res.trades.length > 3);
+  for (const t of res.trades) {
+    assert.deepEqual(t.tpHits, [], "no targets means no target hits to report");
+    const portion = t.exits.reduce((s, e) => s + e.portion, 0);
+    assert.ok(Math.abs(portion - 1) < 1e-6, "the whole position must still be exited");
+  }
+  assert.deepEqual(res.stats.tpRates, [], "and the panel has no target rows to show");
 });

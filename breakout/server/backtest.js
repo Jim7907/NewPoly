@@ -110,9 +110,11 @@ function simulateTrade(bars, series, sig, p, equityAtEntry) {
 
     // ── Dynamic exit: once `trailAfterTp` targets are banked, the runner trails by ATR.
     // Computed from bars up to and including j, and only effective from bar j+1 onward.
+    // trailAtrMult of 0 turns the trail off; trailAfterTp of 0 arms it from entry, which is
+    // how a no-target trend configuration exits.
     const hits = tpHits.filter(Boolean).length;
     extreme = dir === 1 ? Math.max(extreme, bar.h) : Math.min(extreme, bar.l);
-    if (p.trailAfterTp > 0 && hits >= p.trailAfterTp) {
+    if (p.trailAtrMult > 0 && hits >= p.trailAfterTp) {
       const a = series.atr[j] || sig.atr;
       const trail = extreme - dir * p.trailAtrMult * a;
       if (dir === 1 ? trail > stop : trail < stop) { stop = trail; stopKind = "trail"; }

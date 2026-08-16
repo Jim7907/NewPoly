@@ -94,6 +94,12 @@ function StatsPanel({ stats, curve }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         <div>
           <div style={{ fontSize: 9, letterSpacing: 1.2, color: C.dim, marginBottom: 6 }}>TARGET HIT RATE</div>
+          {!s.tpRates.length && (
+            <div style={{ fontSize: 10, color: C.dim, lineHeight: 1.5, maxWidth: 380 }}>
+              No static targets — the whole position rides the trailing stop. Switch <b>exit style</b>
+              {" "}to “scale out at targets” to see per-target hit rates.
+            </div>
+          )}
           <div style={{ display: "grid", gap: 5 }}>
             {s.tpRates.map(tp => (
               <div key={tp.level} style={{ display: "grid", gridTemplateColumns: "42px 1fr 74px", alignItems: "center", gap: 8, fontSize: 10, fontFamily: "ui-monospace, monospace" }}>
@@ -311,7 +317,9 @@ function Scan({ tf, limit, params, source }) {
 export default function App() {
   const [cfg, setCfg] = useState(null);
   const [symbol, setSymbol] = useState("BTC-USD");
-  const [tf, setTf] = useState("15m");
+  // Daily is the default because it is the only horizon where trading costs stay small
+  // relative to the risk unit — see the cost-per-trade tile on any lower timeframe.
+  const [tf, setTf] = useState("1d");
   const [limit, setLimit] = useState(1500);
   const [source, setSource] = useState("");            // "" = live w/ fallback, "synthetic" = demo
   const [params, setParams] = useState(null);
@@ -423,17 +431,24 @@ export default function App() {
           <Field label="stop ATR mult" value={params.slAtrMult} step={0.1} onChange={v => set("slAtrMult", v)} />
           <Field label="stop buffer (ATR)" value={params.slBufferAtr} step={0.05} onChange={v => set("slBufferAtr", v)} />
           <Field label="max risk (ATR)" value={params.maxRiskAtr} step={0.5} onChange={v => set("maxRiskAtr", v)} />
-          <label style={{ fontSize: 10, color: C.dim }}>targets (R)</label>
-          <div style={{ display: "flex", gap: 4 }}>
-            {params.tpR.map((v, i) => (
-              <input key={i} type="number" step={0.5} value={v}
-                onChange={e => set("tpR", params.tpR.map((x, k) => (k === i ? Number(e.target.value) : x)))}
-                style={{ width: "100%", minWidth: 0, background: "#0a0e16", border: `1px solid ${C.border}`, color: C.text, borderRadius: 4, padding: "3px 4px", fontSize: 10, fontFamily: "ui-monospace, monospace" }} />
-            ))}
-          </div>
-          <Toggle label="BE stop after TP1" value={params.beAfterTp1} onChange={v => set("beAfterTp1", v)} />
-          <Field label="trail after N TPs" value={params.trailAfterTp} min={0} max={4} onChange={v => set("trailAfterTp", v)} hint="0 disables the dynamic trailing exit" />
-          <Field label="trail ATR mult" value={params.trailAtrMult} step={0.25} onChange={v => set("trailAtrMult", v)} />
+          <Select label="exit style" value={params.tpR.length ? "ladder" : "trend"}
+            onChange={v => setParams(p => ({ ...p, ...cfg.presets[v === "trend" ? "trend" : "ladder"].params }))}
+            options={[{ value: "trend", label: "runner + trail" }, { value: "ladder", label: "scale out at targets" }]} />
+          {params.tpR.length > 0 && (
+            <>
+              <label style={{ fontSize: 10, color: C.dim }}>targets (R)</label>
+              <div style={{ display: "flex", gap: 4 }}>
+                {params.tpR.map((v, i) => (
+                  <input key={i} type="number" step={0.5} value={v}
+                    onChange={e => set("tpR", params.tpR.map((x, k) => (k === i ? Number(e.target.value) : x)))}
+                    style={{ width: "100%", minWidth: 0, background: "#0a0e16", border: `1px solid ${C.border}`, color: C.text, borderRadius: 4, padding: "3px 4px", fontSize: 10, fontFamily: "ui-monospace, monospace" }} />
+                ))}
+              </div>
+              <Toggle label="BE stop after TP1" value={params.beAfterTp1} onChange={v => set("beAfterTp1", v)} />
+              <Field label="trail after N TPs" value={params.trailAfterTp} min={0} max={4} onChange={v => set("trailAfterTp", v)} />
+            </>
+          )}
+          <Field label="trail ATR mult" value={params.trailAtrMult} step={0.25} onChange={v => set("trailAtrMult", v)} hint="0 turns the trailing exit off" />
           <Field label="max bars in trade" value={params.maxBars} step={10} onChange={v => set("maxBars", v)} />
         </Section>
 

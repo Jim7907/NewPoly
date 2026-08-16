@@ -15,7 +15,10 @@ function rangeThenBreak({ close = 103, high = null, vol = 100, breakVol = 100, p
   return bars;
 }
 
+// Detection tests turn the filters off; the ones that assert stop geometry also pin the
+// stop mode, since the shipped default is an ATR stop rather than a structural one.
 const noFilters = { volFilter: false, flatFilter: false, trendFilter: false };
+const levelStop = { ...noFilters, slMode: "level", tpR: [1, 2, 3, 5] };
 
 test("a close beyond the range high produces an accepted long signal", () => {
   const bars = rangeThenBreak();
@@ -62,7 +65,7 @@ test("direction restricts which side can fire", () => {
 test("a break below the range low is a short with a stop above the broken level", () => {
   const bars = rangeThenBreak({ close: 97 });
   bars[60] = { t: 60 * 900, o: 99.5, h: 100.2, l: 96.5, c: 97, v: 100 };
-  const s = strategy.detectSignals(bars, noFilters)[0];
+  const s = strategy.detectSignals(bars, levelStop)[0];
   assert.equal(s.side, "short");
   assert.equal(s.level, 99);
   assert.ok(s.plan.sl > s.level, "stop sits just above the boundary that broke");
@@ -71,7 +74,7 @@ test("a break below the range low is a short with a stop above the broken level"
 
 test("targets are exact R multiples of the entry-to-stop distance", () => {
   const ctx = { level: 101, high: 101, low: 99 };
-  const plan = strategy.buildPlan("long", 103, ctx, 2, strategy.withDefaults({ tpR: [1, 2, 3, 5] }));
+  const plan = strategy.buildPlan("long", 103, ctx, 2, strategy.withDefaults({ tpR: [1, 2, 3, 5], slMode: "level" }));
   assert.ok(Math.abs(plan.sl - 100.5) < 1e-9);       // broken level - 0.25 ATR
   assert.ok(Math.abs(plan.risk - 2.5) < 1e-9);
   plan.tps.forEach((tp, k) => assert.ok(Math.abs(tp - (103 + [1, 2, 3, 5][k] * 2.5)) < 1e-9));
@@ -88,7 +91,7 @@ test("stop modes place risk at different structures", () => {
 test("structure stops never come out tighter than half an ATR", () => {
   // Entry barely above the level it broke — structure alone would leave ~0 risk.
   const plan = strategy.buildPlan("long", 100.05, { level: 100, high: 100, low: 99.99 }, 2,
-    strategy.withDefaults({ slBufferAtr: 0 }));
+    strategy.withDefaults({ slBufferAtr: 0, slMode: "level" }));
   assert.ok(plan.risk >= 1 - 1e-9, `risk ${plan.risk} should be floored at 0.5 ATR`);
 });
 

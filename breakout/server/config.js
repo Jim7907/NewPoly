@@ -58,16 +58,23 @@ const DEFAULT_PARAMS = {
   atrLen: 14,
 
   // ── Risk: stop at structure, targets scaled off the resulting risk ──
-  slMode: "level",         // level (just under the broken boundary, which flips to support)
-                           // | range (far side of the whole range) | atr (fixed ATR distance)
-  slAtrMult: 1.5,          // atr mode: stop distance in ATR
+  // These defaults were selected on BTC daily bars before 2023 and then validated on the
+  // post-2023 BTC period and on six symbols that took no part in the selection. See the
+  // "Choosing the defaults" section of the README for the numbers.
+  slMode: "atr",           // atr (fixed ATR distance) | level (just under the broken boundary,
+                           // which flips to support) | range (far side of the whole range)
+  slAtrMult: 2,            // atr mode: stop distance in ATR
   slBufferAtr: 0.25,       // level/range mode: padding beyond the structural price
   maxRiskAtr: 4,           // reject setups already extended too far past the level to stop safely
-  tpR: [1, 2, 3, 5],       // four static targets, in R multiples
-  tpAlloc: [0.5, 0.25, 0.15, 0.10], // GG-Shot's suggested scale-out ladder
+
+  // No static targets by default: the position rides until the trailing stop takes it out.
+  // Scaling out caps winners while losers stay whole, which is what turned the four-target
+  // ladder negative out of sample. Set tpR to enable targets (the "GG ladder" preset does).
+  tpR: [],                 // static targets, in R multiples
+  tpAlloc: [],             // fraction of the position banked at each target
   beAfterTp1: true,        // move stop to breakeven once TP1 fills
-  trailAfterTp: 2,         // arm the ATR trail after this many TPs (the "dynamic" targets)
-  trailAtrMult: 2.0,
+  trailAfterTp: 0,         // targets banked before the ATR trail arms (0 = from entry)
+  trailAtrMult: 3.0,       // trail width in ATR; 0 turns the trail off entirely
   maxBars: 150,            // time stop
 
   // ── Account ──
@@ -79,12 +86,14 @@ const DEFAULT_PARAMS = {
   pessimisticFills: true,  // if a bar touches both stop and target, assume the stop first
 };
 
-// Named starting points. Not magic — just sensible (rangeLen, filter) pairings per horizon.
+// Exit styles, which is the choice that decides whether this strategy makes money.
+// The ladder is the GG-Shot-faithful configuration; it is kept because comparing it against
+// the runner in the stats panel is the single most instructive thing this tool does.
 const PRESETS = {
-  scalp:    { label: "Scalp",    tf: "5m",  params: { rangeLen: 14, minAdx: 20, volMult: 1.6, maxBars: 60,  tpR: [1, 1.8, 2.6, 4] } },
-  intraday: { label: "Intraday", tf: "15m", params: { rangeLen: 20, minAdx: 18, volMult: 1.4, maxBars: 150, tpR: [1, 2, 3, 5] } },
-  swing:    { label: "Swing",    tf: "1h",  params: { rangeLen: 30, minAdx: 16, volMult: 1.3, maxBars: 200, tpR: [1, 2, 3.5, 6], trendFilter: true } },
-  position: { label: "Position", tf: "1d",  params: { rangeLen: 40, minAdx: 15, volMult: 1.2, maxBars: 250, tpR: [1, 2, 4, 8], trendFilter: true } },
+  trend:  { label: "Trend",  tf: "1d", params: { tpR: [], tpAlloc: [], trailAfterTp: 0, trailAtrMult: 3 } },
+  ladder: { label: "GG ladder", tf: "1d", params: { tpR: [1, 2, 3, 5], tpAlloc: [0.5, 0.25, 0.15, 0.10], trailAfterTp: 2, trailAtrMult: 2 } },
+  runner: { label: "Runner", tf: "1d", params: { tpR: [2, 4, 8, 16], tpAlloc: [0.15, 0.15, 0.15, 0.55], trailAfterTp: 1, trailAtrMult: 3 } },
+  swing:  { label: "6h swing", tf: "6h", params: { tpR: [], tpAlloc: [], trailAfterTp: 0, trailAtrMult: 3, rangeLen: 30 } },
 };
 
 module.exports = {

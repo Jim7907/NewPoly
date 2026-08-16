@@ -14,8 +14,10 @@ const { DEFAULT_PARAMS } = require("./config");
 
 const withDefaults = (p = {}) => {
   const merged = { ...DEFAULT_PARAMS, ...p };
-  // Array params must not be half-overridden by a shorter user array.
-  merged.tpR = Array.isArray(p.tpR) && p.tpR.length ? p.tpR.map(Number) : DEFAULT_PARAMS.tpR;
+  // Array params must not be half-overridden by a shorter user array. An explicitly EMPTY
+  // tpR is meaningful — it means "no static targets, ride the whole position to the stop" —
+  // so only a missing tpR falls back to the default ladder.
+  merged.tpR = Array.isArray(p.tpR) ? p.tpR.map(Number) : DEFAULT_PARAMS.tpR;
   merged.tpAlloc = normalizeAlloc(p.tpAlloc, merged.tpR.length);
   return merged;
 };
