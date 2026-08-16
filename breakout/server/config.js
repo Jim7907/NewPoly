@@ -5,8 +5,9 @@ const num = (k, d) => (process.env[k] != null && process.env[k] !== "" ? Number(
 const str = (k, d) => (process.env[k] != null && process.env[k] !== "" ? process.env[k] : d);
 const bool = (k, d) => (process.env[k] != null && process.env[k] !== "" ? process.env[k] === "true" : d);
 
-// Coinbase Exchange product ids. Fee defaults below are taker-side crypto assumptions.
-const SYMBOLS = [
+// Two venues. Crypto ids are Coinbase Exchange products; equity tickers come from Yahoo, which
+// serves decades of split-adjusted daily bars without a key. `source` routes the fetch.
+const CRYPTO = [
   { id: "BTC-USD",  label: "BTC/USD",  tick: 0.01 },
   { id: "ETH-USD",  label: "ETH/USD",  tick: 0.01 },
   { id: "SOL-USD",  label: "SOL/USD",  tick: 0.01 },
@@ -14,7 +15,28 @@ const SYMBOLS = [
   { id: "DOGE-USD", label: "DOGE/USD", tick: 0.00001 },
   { id: "LINK-USD", label: "LINK/USD", tick: 0.001 },
   { id: "AVAX-USD", label: "AVAX/USD", tick: 0.001 },
-];
+].map(s => ({ ...s, source: "coinbase", asset: "crypto" }));
+
+const EQUITY = [
+  { id: "SPY",  label: "S&P 500 (SPY)" },
+  { id: "QQQ",  label: "Nasdaq 100 (QQQ)" },
+  { id: "IWM",  label: "Russell 2000 (IWM)" },
+  { id: "AAPL", label: "Apple" },
+  { id: "MSFT", label: "Microsoft" },
+  { id: "NVDA", label: "NVIDIA" },
+  { id: "AMZN", label: "Amazon" },
+  { id: "GOOGL", label: "Alphabet" },
+  { id: "META", label: "Meta" },
+  { id: "TSLA", label: "Tesla" },
+  { id: "JPM",  label: "JPMorgan" },
+  { id: "XOM",  label: "Exxon" },
+  { id: "JNJ",  label: "Johnson & Johnson" },
+  { id: "WMT",  label: "Walmart" },
+  { id: "GLD",  label: "Gold (GLD)" },
+  { id: "TLT",  label: "20y Treasuries (TLT)" },
+].map(s => ({ ...s, source: "yahoo", asset: "equity", tick: 0.01 }));
+
+const SYMBOLS = [...CRYPTO, ...EQUITY];
 
 // Coinbase only serves these granularities (seconds).
 const TIMEFRAMES = [
@@ -94,13 +116,17 @@ const PRESETS = {
   ladder: { label: "GG ladder", tf: "1d", params: { tpR: [1, 2, 3, 5], tpAlloc: [0.5, 0.25, 0.15, 0.10], trailAfterTp: 2, trailAtrMult: 2 } },
   runner: { label: "Runner", tf: "1d", params: { tpR: [2, 4, 8, 16], tpAlloc: [0.15, 0.15, 0.15, 0.55], trailAfterTp: 1, trailAtrMult: 3 } },
   swing:  { label: "6h swing", tf: "6h", params: { tpR: [], tpAlloc: [], trailAfterTp: 0, trailAtrMult: 3, rangeLen: 30 } },
+  // Equities only. Shorting breakdowns in a market with 24 years of upward drift is the single
+  // most destructive thing this strategy can do (see test/equities.test.js), so this preset
+  // takes the long side only. It is still barely profitable in money terms — see the README.
+  equity: { label: "Equity long", tf: "1d", params: { direction: "long", tpR: [], tpAlloc: [], trailAfterTp: 0, trailAtrMult: 3 } },
 };
 
 module.exports = {
   PORT: num("PORT", 3003),
   CACHE_DIR: str("CACHE_DIR", null),
   CACHE_TTL_MS: num("CACHE_TTL_MS", 5 * 60 * 1000),
-  MAX_BARS: num("MAX_BARS", 3000),
+  MAX_BARS: num("MAX_BARS", 8000),      // daily equity history runs to ~24 years
   ALLOW_SYNTHETIC: bool("ALLOW_SYNTHETIC", true),
   SYMBOLS, TIMEFRAMES, DEFAULT_PARAMS, PRESETS,
 };

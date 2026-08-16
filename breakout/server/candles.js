@@ -68,6 +68,42 @@ async function fetchCoinbase(symbol, tf, limit) {
   return bars.filter(b => b.t < nowBucket).slice(-limit);
 }
 
+// ── Yahoo (equities/ETFs) ───────────────────────────────────────
+// The v8 chart endpoint needs no key and serves decades of daily bars. Its `quote` arrays are
+// split-adjusted, which is what a price-breakout backtest needs — dividend adjustment would
+// distort the high/low geometry the strategy reads. Missing entries (halts, holidays) are null
+// and get dropped.
+const YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart";
+const YAHOO_INTERVAL = { "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "6h": null, "1d": "1d" };
+
+async function fetchYahoo(symbol, tf, limit) {
+  const interval = YAHOO_INTERVAL[tf];
+  if (!interval) throw new Error(`Yahoo has no ${tf} bars`);
+  const gran = tfSeconds(tf);
+  const end = Math.floor(Date.now() / 1000);
+  // Ask for well over `limit` bars: sessions are ~6.5h and weekends/holidays are missing, so
+  // wall-clock span per bar is much larger than the bar's own duration.
+  const span = interval === "1d" ? limit * 86400 * 1.6 : limit * gran * 4;
+  const url = `${YAHOO}/${encodeURIComponent(symbol)}?period1=${Math.max(0, end - Math.round(span))}`
+    + `&period2=${end}&interval=${interval}&includePrePost=false`;
+  const { data } = await ext.get(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+
+  const res = data?.chart?.result?.[0];
+  if (!res) throw new Error(data?.chart?.error?.description || "no Yahoo data");
+  const q = res.indicators?.quote?.[0] || {};
+  const ts = res.timestamp || [];
+  const bars = [];
+  for (let i = 0; i < ts.length; i++) {
+    const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i];
+    if (![o, h, l, c].every(Number.isFinite)) continue;
+    bars.push({ t: ts[i], o, h, l, c, v: Number(q.volume?.[i]) || 0 });
+  }
+  // The session in progress is a partial bar; a half-formed high/low would fake breakouts.
+  const today = new Date().toISOString().slice(0, 10);
+  const trimmed = bars.filter(b => !(interval === "1d" && new Date(b.t * 1000).toISOString().slice(0, 10) === today));
+  return trimmed.slice(-limit);
+}
+
 // ── Synthetic market ────────────────────────────────────────────
 // Deterministic (seeded) regime-switching process: the walk alternates between low-volatility
 // ranges and trending expansions, which is exactly the structure a breakout strategy trades.
@@ -128,22 +164,23 @@ async function getBars(symbol, tf, limit = 1500, opts = {}) {
     return { bars: synthetic(symbol, tf, lim, opts.seed ?? 42), source: "synthetic", cached: false };
   }
 
+  const venue = (cfg.SYMBOLS.find(s => s.id === symbol) || {}).source || "coinbase";
   const hit = mem.get(k) || readDiskCache(k);
   const fresh = hit && Date.now() - hit.ts < cfg.CACHE_TTL_MS && hit.bars.length >= lim;
-  if (fresh && !opts.refresh) return { bars: hit.bars.slice(-lim), source: hit.source || "coinbase", cached: true };
+  if (fresh && !opts.refresh) return { bars: hit.bars.slice(-lim), source: hit.source || venue, cached: true };
 
   try {
-    const bars = await fetchCoinbase(symbol, tf, lim);
+    const bars = venue === "yahoo" ? await fetchYahoo(symbol, tf, lim) : await fetchCoinbase(symbol, tf, lim);
     if (bars.length < 60) throw new Error(`only ${bars.length} bars returned`);
-    const payload = { ts: Date.now(), bars, source: "coinbase" };
+    const payload = { ts: Date.now(), bars, source: venue };
     mem.set(k, payload);
     writeDiskCache(k, payload);
-    return { bars, source: "coinbase", cached: false };
+    return { bars, source: venue, cached: false };
   } catch (e) {
-    if (hit) return { bars: hit.bars.slice(-lim), source: hit.source || "coinbase", cached: true, stale: true, error: e.message };
+    if (hit) return { bars: hit.bars.slice(-lim), source: hit.source || venue, cached: true, stale: true, error: e.message };
     if (!cfg.ALLOW_SYNTHETIC) throw e;
     return { bars: synthetic(symbol, tf, lim), source: "synthetic", cached: false, error: e.message };
   }
 }
 
-module.exports = { getBars, fetchCoinbase, synthetic, mulberry32, tfSeconds };
+module.exports = { getBars, fetchCoinbase, fetchYahoo, synthetic, mulberry32, tfSeconds };

@@ -29,7 +29,8 @@ npm install
 npm run dev          # API on :3003, UI on :3004
 ```
 
-Open http://localhost:3004. It loads Coinbase candles for the selected market and backtests
+Open http://localhost:3004. It loads candles for the selected market — Coinbase for crypto,
+Yahoo for the equity tickers, neither needing a key — and backtests
 immediately; edit any parameter and the run repeats (debounced). With no network, switch **data**
 to `synthetic demo` — a seeded regime-switching generator, clearly labelled in the header so its
 numbers are never mistaken for real ones.
@@ -117,6 +118,43 @@ daily history, 186 trades) the default averages **+0.23R** and is positive on **
 on LINK and DOGE. It is a modest, uneven edge on daily crypto — not a money printer — and on 1h
 bars it is still negative.
 
+## Does it work on stocks?
+
+No — and the failure is more statistically solid than the crypto success.
+
+Equities are a clean test: the defaults were chosen on BTC, so no stock data took any part in
+selecting them. Run over 16 US tickers and ETFs (indices, mega-caps, gold, treasuries), ~24 years
+of split-adjusted daily bars each, **1,210 trades**:
+
+| configuration | trades | mean | t-stat | positive symbols |
+|---|---|---|---|---|
+| shipped defaults (long + short) | 1210 | −0.19R | **−4.71** | 4 / 16 |
+| short side only | 739 | −0.49R | **−13.39** | 0 / 16 |
+| long side only | 546 | +0.19R | **+2.50** | 9 / 16 |
+
+The short side is the whole problem. Shorting breakdowns in a market with decades of upward drift
+loses on *every symbol tested* with a t-stat of −13, and it drags the combined system deep into
+the red. Costs are not the explanation — they run 0.03–0.11R here, and the result stays negative
+with fees set to zero.
+
+The long side is genuinely positive and, unlike the crypto result, statistically significant. It
+is also stable across regimes: +0.215R (t 1.68) over 2002–2013 and +0.170R (t 1.81) over
+2014–2026.
+
+**But it is economically worthless.** Trades are rare — about 1.4 per symbol per year — so a
++0.19R edge at 1% risk compounds to almost nothing:
+
+| median annualized, 16 symbols, ~24y | |
+|---|---|
+| long-only strategy @ 1% risk/trade | +0.09%/yr |
+| long-only strategy @ 10% risk/trade | −0.17%/yr |
+| buy & hold | **+14.15%/yr** |
+
+Raising risk makes it *worse*, because drawdowns compound against you faster than the thin edge
+accumulates. A real edge that is too small and too infrequent to pay for itself is still not a
+strategy. The `Equity long` preset exists so you can reproduce this; `test/equities.test.js` pins
+it against a committed 24-year SPY fixture.
+
 ## Fill model
 
 Backtests flatter themselves in predictable ways, so these are the choices made here:
@@ -174,12 +212,12 @@ server/indicators.js   pure TA: SMA/EMA/RMA, ATR, ADX, Donchian, pivots, relativ
 server/strategy.js     level detection, filters, stop + target construction
 server/backtest.js     bar-by-bar simulation with partial fills and dynamic exits
 server/stats.js        panel metrics: PF, expectancy, drawdown, per-TP hit rates
-server/candles.js      Coinbase fetch + cache, seeded synthetic fallback
+server/candles.js      Coinbase (crypto) + Yahoo (equities) fetch + cache, synthetic fallback
 server/optimize.js     grid search + walk-forward validation
 src/Chart.jsx          canvas candlestick renderer and all overlays (no chart library)
 src/App.jsx            controls, stats panel, blotter, optimizer, scanner
-test/                  52 unit tests — `npm test`
-test/fixtures/         real out-of-sample BTC daily bars, used by the defaults regression test
+test/                  57 unit tests — `npm test`
+test/fixtures/         real out-of-sample bars (BTC daily, 24y of SPY) behind the regression tests
 ```
 
 ## Caveats
