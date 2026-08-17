@@ -38,7 +38,11 @@ npm run dev          # API on :3003, UI on :3004  <-- open 3004
 ```
 
 Open http://localhost:3004 in dev, or http://localhost:3003 after `npm run local`. Hitting the
-API port without a build shows a page telling you where the UI is rather than a blank 404. It loads candles for the selected market — Coinbase for crypto,
+API port without a build shows a page telling you where the UI is rather than a blank 404.
+
+Requires **Node 18+** (`node -v`). All scripts are cross-platform — no shell-specific env-var
+prefixes — so they work in CMD and PowerShell as well as bash. If port 3003 is taken, set another:
+`PORT=3010 npm run local` (bash) or `set PORT=3010 && npm run local` (CMD). It loads candles for the selected market — Coinbase for crypto,
 Yahoo for the equity tickers, neither needing a key — and backtests
 immediately; edit any parameter and the run repeats (debounced). With no network, switch **data**
 to `synthetic demo` — a seeded regime-switching generator, clearly labelled in the header so its
