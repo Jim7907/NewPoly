@@ -23,13 +23,22 @@ The GG-Shot four-target ladder is one click away and returns +0.13R on the same 
 
 ## Quick start
 
+**Simplest — one port, everything on it:**
+
 ```bash
 cd breakout
 npm install
-npm run dev          # API on :3003, UI on :3004
+npm run local        # builds the UI, then serves UI + API on http://localhost:3003
 ```
 
-Open http://localhost:3004. It loads candles for the selected market — Coinbase for crypto,
+**Or with hot reload** (two ports — the UI is on 3004, *not* 3003):
+
+```bash
+npm run dev          # API on :3003, UI on :3004  <-- open 3004
+```
+
+Open http://localhost:3004 in dev, or http://localhost:3003 after `npm run local`. Hitting the
+API port without a build shows a page telling you where the UI is rather than a blank 404. It loads candles for the selected market — Coinbase for crypto,
 Yahoo for the equity tickers, neither needing a key — and backtests
 immediately; edit any parameter and the run repeats (debounced). With no network, switch **data**
 to `synthetic demo` — a seeded regime-switching generator, clearly labelled in the header so its

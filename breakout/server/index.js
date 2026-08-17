@@ -4,6 +4,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const fs = require("fs");
 
 const cfg = require("./config");
 const candles = require("./candles");
@@ -109,16 +110,34 @@ app.post("/api/scan", async (req, res) => {
   res.json({ tf, rows, ts: new Date().toISOString() });
 });
 
-if (process.env.NODE_ENV === "production") {
-  const dist = path.join(__dirname, "../dist");
+// Serve the built UI whenever a build exists, regardless of NODE_ENV, so `npm run build` plus
+// `npm run server` is a single-port setup. Without a build, `/` explains where the UI actually
+// is instead of returning a bare 404 — in dev the UI is served by Vite on another port.
+const dist = path.join(__dirname, "../dist");
+const hasBuild = fs.existsSync(path.join(dist, "index.html"));
+if (hasBuild) {
   app.use(express.static(dist));
   app.get("*", (req, res) => res.sendFile(path.join(dist, "index.html")));
+} else {
+  app.get("/", (req, res) => res.status(200).type("html").send(
+    `<body style="background:#06070d;color:#cbd5e1;font-family:ui-monospace,monospace;padding:40px;line-height:1.7">
+     <h2 style="color:#38bdf8">Breakout Lab — API only on this port</h2>
+     <p>This port (${cfg.PORT}) serves the API. No frontend build was found, so there is no UI here.</p>
+     <p><b>In dev</b> the UI runs on Vite: open <a style="color:#22c55e" href="http://localhost:3004">http://localhost:3004</a></p>
+     <p><b>For one port</b>, build first: <code style="color:#f59e0b">npm run build && npm start</code> — then the UI is served right here.</p>
+     <p>API is up: <a style="color:#38bdf8" href="/api/health">/api/health</a></p></body>`));
 }
 
 if (require.main === module) {
   app.listen(cfg.PORT, () => {
-    console.log(`\n  Breakout Backtester — http://localhost:${cfg.PORT}`);
-    console.log(`  ${cfg.SYMBOLS.length} symbols · ${cfg.TIMEFRAMES.map(t => t.id).join(", ")}\n`);
+    console.log(`\n  Breakout Backtester — ${cfg.SYMBOLS.length} symbols · ${cfg.TIMEFRAMES.map(t => t.id).join(", ")}`);
+    if (hasBuild) {
+      console.log(`  UI + API:  http://localhost:${cfg.PORT}\n`);
+    } else {
+      console.log(`  API:       http://localhost:${cfg.PORT}   (no build found — API only)`);
+      console.log(`  UI (dev):  http://localhost:3004          <-- open this one`);
+      console.log(`  One port instead:  npm run local\n`);
+    }
   });
 }
 

@@ -5,6 +5,7 @@
   "description": "Range-breakout strategy with a visual backtester — consolidation boxes, entry/stop/target ladders and a live stats panel drawn on a candlestick chart",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "local": "npm run build && npm start",
     "client": "vite",
     "server": "node server/index.js",
     "build": "vite build",
