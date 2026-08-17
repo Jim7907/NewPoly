@@ -1,0 +1,24 @@
+# Non-Docker deployment. Install:
+#   sudo cp breakout/systemd/breakout.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now breakout
+# Adjust User/WorkingDirectory to match where you cloned the repo.
+[Unit]
+Description=Breakout Lab — range-breakout visual backtester
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/NewPoly/breakout
+Environment=NODE_ENV=production
+Environment=PORT=3003
+Environment=CACHE_DIR=/root/NewPoly/breakout/data
+# Build the frontend once, then run the server.
+ExecStartPre=/usr/bin/env bash -lc 'cd /root/NewPoly/breakout && npm install && npm run build'
+ExecStart=/usr/bin/env node server/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

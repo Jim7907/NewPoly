@@ -35,11 +35,38 @@ immediately; edit any parameter and the run repeats (debounced). With no network
 to `synthetic demo` — a seeded regime-switching generator, clearly labelled in the header so its
 numbers are never mistaken for real ones.
 
-Docker:
+Docker (local):
 
 ```bash
 docker compose up --build -d      # http://localhost:3003
 ```
+
+## Deploy to a VPS
+
+One command, run **on the VPS**. Re-run any time to pull the latest and rebuild:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jim7907/NewPoly/claude/breakout-strategy-backtesting-kdx75b/breakout/deploy.sh | bash
+```
+
+It clones (or updates) the repo, then builds with Docker Compose if available and falls back to
+Node otherwise. Then open `http://<vps-ip>:3003` — and open the port if the firewall is on:
+
+```bash
+sudo ufw allow 3003/tcp
+```
+
+Without Docker, run it as a service instead:
+
+```bash
+cd ~/NewPoly/breakout && npm install && npm run build
+sudo cp systemd/breakout.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now breakout
+```
+
+There are no API keys and no order placement, so the only thing worth securing is the port
+itself — put it behind nginx/Caddy with TLS if it is publicly reachable. Fetched candles are
+cached in the `breakout_data` volume (or `breakout/data/` on the systemd path).
 
 ## The strategy
 
