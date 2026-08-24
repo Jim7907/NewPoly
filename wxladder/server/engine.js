@@ -45,8 +45,11 @@ async function resolveDue(nowMs = Date.now(), params = cfg) {
     }
 
     if (value == null) {
-      // Never invent a settlement. Void only once the station has clearly not reported.
-      if (daysBetween(b.marketDate, today) > params.SETTLE_GRACE_DAYS) {
+      // Never invent a settlement. Void only once the station has clearly not reported —
+      // and the grace is per-station, because the HK Observatory's Daily Extract lags by up
+      // to a month while METAR is live. A short grace there would void every HK basket.
+      const grace = station.settleGraceDays ?? params.SETTLE_GRACE_DAYS;
+      if (daysBetween(b.marketDate, today) > grace) {
         settled.push(db.settleBasket(b.id, null, null));
       }
       continue;
@@ -88,7 +91,10 @@ async function seedBias({ days = cfg.SEED_DAYS, kinds = cfg.KINDS, stations = cf
       const have = db.biasPairs(station.icao, kind, cfg.MIN_LEAD_DAYS).length;
       if (have >= minSamples) { results.push({ station: station.icao, kind, skipped: true, have }); continue; }
       try {
-        results.push(await history.seedStation(db, station, kind, days, cfg.MIN_LEAD_DAYS));
+        // Reach back at least as far as this station's bias window, or a lagging publisher
+        // is seeded with data that already falls outside the window it will be fitted on.
+        const reach = Math.max(days, station.biasWindowDays ?? 0);
+        results.push(await history.seedStation(db, station, kind, reach, cfg.MIN_LEAD_DAYS));
       } catch (e) {
         console.error(`[seed] ${station.icao}/${kind}: ${e.message}`);
         results.push({ station: station.icao, kind, error: e.message });

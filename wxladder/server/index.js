@@ -63,14 +63,14 @@ async function scanOnce() {
         db.logForecast({
           station: lad.station.icao, kind: lad.kind, marketDate: lad.date, leadDays: lad.leadDays,
           rawCenter: forecast.rawCenter, ensSd: forecast.ensSd, ensMean: forecast.ensMean,
-          detMean: forecast.detMean, nMembers: forecast.nMembers,
+          detMean: forecast.detMean, detSd: forecast.detSd, nMembers: forecast.nMembers,
         });
       }
       const biasFit = bias.fitBias(db.biasPairs(lad.station.icao, lad.kind, lad.leadDays), {
-        asOf: lad.date, windowDays: params.BIAS_WINDOW_DAYS,
+        asOf: lad.date, windowDays: lad.station.biasWindowDays ?? params.BIAS_WINDOW_DAYS,
         halfLifeDays: params.BIAS_HALFLIFE_DAYS, clampTo: params.BIAS_CLAMP,
       });
-      const spreadHist = bias.spreadHistory(db.spreadRows(lad.station.icao, lad.kind, lad.leadDays), { asOf: lad.date });
+      const spreadHist = bias.spreadTracks(db.spreadRows(lad.station.icao, lad.kind, lad.leadDays), { asOf: lad.date });
       plans.push({ lad, forecast, biasFit, spreadHist,
         plan: ladderMod.buildLadder({ lad, forecast, biasFit, spreadHist, books: {}, bankroll, openExposure }, params) });
     }
@@ -151,15 +151,18 @@ app.get("/api/stations", (req, res) => {
   for (const s of Object.values(cfg.UNIVERSE)) {
     for (const kind of kinds) {
       const pairs = db.biasPairs(s.icao, kind, cfg.MIN_LEAD_DAYS);
-      const fit = bias.fitBias(pairs, { asOf: new Date().toISOString().slice(0, 10), windowDays: cfg.BIAS_WINDOW_DAYS, clampTo: cfg.BIAS_CLAMP });
-      const spread = bias.spreadHistory(db.spreadRows(s.icao, kind, cfg.MIN_LEAD_DAYS));
+      const fit = bias.fitBias(pairs, { asOf: new Date().toISOString().slice(0, 10), windowDays: s.biasWindowDays ?? cfg.BIAS_WINDOW_DAYS, clampTo: cfg.BIAS_CLAMP });
+      const spread = bias.spreadTracks(db.spreadRows(s.icao, kind, cfg.MIN_LEAD_DAYS));
       rows.push({
         city: s.city, station: s.icao, name: s.name, lat: s.lat, lon: s.lon, tz: s.tz,
         resolver: s.resolver, unsupported: !!s.unsupported, kind,
         biasSamples: fit.n, bias: fit.bias, rmse: fit.rmse, rmseUncorrected: fit.rmseUncorrected,
         calibrated: fit.n >= cfg.MIN_BIAS_SAMPLES,
-        spreadSamples: spread.length,
-        dispersionReady: spread.length >= cfg.MIN_DISP_SAMPLES,
+        spreadSamples: spread.ens.length,
+        detSpreadSamples: spread.det.length,
+        dispersionReady: spread.ens.length >= cfg.MIN_DISP_SAMPLES || spread.det.length >= cfg.MIN_DISP_SAMPLES,
+        dispersionSource: spread.ens.length >= cfg.MIN_DISP_SAMPLES ? "ensemble"
+          : spread.det.length >= cfg.MIN_DISP_SAMPLES ? "multi-model" : null,
       });
     }
   }

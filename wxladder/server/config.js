@@ -51,14 +51,33 @@ const UNIVERSE = {
   "Wellington":      { icao: "NZWN", lat: -41.331, lon: 174.806, elev: 12, tz: "Pacific/Auckland",   name: "Wellington Intl" },
   "Wuhan":           { icao: "ZHHH", lat: 30.783, lon: 114.205, elev: 33,  tz: "Asia/Shanghai",      name: "Wuhan/Tianhe" },
 };
-for (const [city, s] of Object.entries(UNIVERSE)) { s.city = city; s.resolver = "metar"; }
+// METAR stations report whole degrees, so bucket "31C" is the event round(T) == 31 and the
+// reading settles it directly. `settleGraceDays` is short because METAR is published live.
+for (const [city, s] of Object.entries(UNIVERSE)) {
+  s.city = city; s.resolver = "metar"; s.bucketRule = "round"; s.obsSource = "metar";
+  s.settleGraceDays = num("SETTLE_GRACE_DAYS", 3);
+  s.biasWindowDays = num("BIAS_WINDOW_DAYS", 30);
+}
 
-// Hong Kong resolves off the HK Observatory "Absolute Daily Max (deg. C)" — a different
-// instrument and a different rounding rule (0.1 deg) than the METAR pipeline we model and
-// verify against. It is listed so the discovery layer can name it, and skipped by default.
+// Hong Kong is the one market that does not resolve off METAR, and every difference matters:
+//
+//   • Instrument: the HK Observatory HEADQUARTERS gauge in Tsim Sha Tsui, not the airport.
+//     Over July 2026 the HQ daily max ran a mean -0.45 C from VHHH and differed by >=1 C on
+//     13 of 31 days, so pointing this at the airport would inject its own bias plus noise.
+//   • Bucket rule: HKO publishes to 0.1 C and Polymarket resolves to "the range that
+//     contains" it. Checked against 31 resolved markets, floor(T) matched 31/31 while
+//     round(T) matched 12/31 — so bucket "31C" is [31.0, 32.0), shifted a HALF DEGREE from
+//     every other city. Using the METAR rule here would mis-centre every ladder.
+//   • Publication: the Daily Extract lands with up to a month's lag, so settlement has to
+//     wait rather than void.
 UNIVERSE["Hong Kong"] = {
-  city: "Hong Kong", icao: "VHHH", lat: 22.309, lon: 113.915, elev: 8,
-  tz: "Asia/Hong_Kong", name: "Hong Kong Observatory", resolver: "hko", unsupported: true,
+  city: "Hong Kong", icao: "HKO", lat: 22.302, lon: 114.174, elev: 32,
+  tz: "Asia/Hong_Kong", name: "HK Observatory HQ", resolver: "hko",
+  bucketRule: "floor", obsSource: "hko", settleGraceDays: num("HKO_SETTLE_GRACE_DAYS", 45),
+  // The Daily Extract publishes about a month in arrears, so a 30-day bias window would
+  // usually contain only a handful of readable days and the station would sit permanently
+  // uncalibrated. The window is widened to cover the lag rather than the gate being relaxed.
+  biasWindowDays: num("HKO_BIAS_WINDOW_DAYS", 90),
 };
 
 const CITY_KEYS = str("CITIES", "")

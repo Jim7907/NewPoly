@@ -8,11 +8,19 @@
 //   • Iowa State IEM ASOS archive -> full history, used for settlement + bias + backtest.
 //   • aviationweather.gov METAR   -> last ~48 h, used as a live fallback.
 const axios = require("axios");
+const { RateLimiter, withRetry } = require("./ratelimit");
 
 const IEM = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py";
 const AWC = "https://aviationweather.gov/api/data/metar";
+const HKO = "https://data.weather.gov.hk/weatherAPI/opendata/opendata.php";
 
-const ext = axios.create({ timeout: 30000, headers: { Accept: "application/json,text/csv", "User-Agent": "wxladder-bot/1.0" } });
+const ext = axios.create({ timeout: 45000, headers: { Accept: "application/json,text/csv", "User-Agent": "wxladder-bot/1.0" } });
+
+// Both are free public services and a seeding pass hits them ~64 times each. Keep well
+// inside what they will serve, and back off rather than drop a station's history on a 429.
+const iemLimiter = new RateLimiter(1, 2);
+const awcLimiter = new RateLimiter(2, 4);
+const hkoLimiter = new RateLimiter(1, 2);
 
 // ── Pure helpers (unit-tested) ──────────────────────────────────
 
@@ -66,18 +74,27 @@ async function fetchAsos(station, startDate, endDate) {
   const url = `${IEM}?station=${station.icao}&data=tmpc&year1=${y1}&month1=${+m1}&day1=${+d1}` +
     `&year2=${end.getUTCFullYear()}&month2=${end.getUTCMonth() + 1}&day2=${end.getUTCDate()}` +
     `&format=onlycomma&tz=${encodeURIComponent(station.tz)}&missing=empty&trace=empty`;
-  const { data } = await ext.get(url, { responseType: "text" });
+  await iemLimiter.acquire();
+  const { data } = await withRetry(() => ext.get(url, { responseType: "text" }), { label: `iem ${station.icao}` });
   return parseAsosCsv(data);
 }
 
 async function fetchRecentMetar(station, hours = 48) {
-  const { data } = await ext.get(`${AWC}?ids=${station.icao}&format=json&hours=${hours}`);
+  await awcLimiter.acquire();
+  const { data } = await withRetry(() => ext.get(`${AWC}?ids=${station.icao}&format=json&hours=${hours}`), { label: `awc ${station.icao}` });
   return metarRowsToObs(Array.isArray(data) ? data : [], station.tz);
 }
 
 // Resolved value for one station-day. Archive first (authoritative + complete); recent METAR
 // as a fallback for a day the archive has not ingested yet.
 async function getDailyExtreme(station, date, kind = "high") {
+  if (station.obsSource === "hko") {
+    try {
+      const vals = await getHkoExtremes(date, date, kind);
+      if (vals[date] != null) return { value: vals[date], readings: 1, date, station: station.icao, kind, source: "hko-daily-extract" };
+    } catch (e) { console.error(`[obs] hko ${date}: ${e.message}`); }
+    return null;    // the Daily Extract lags; waiting is correct, inventing a value is not
+  }
   try {
     const rows = await fetchAsos(station, date, date);
     const r = dailyExtreme(rows, date, kind);
@@ -95,6 +112,7 @@ async function getDailyExtreme(station, date, kind = "high") {
 
 // Bulk history for bias fitting / backtesting: { "2026-08-10": 32, ... }
 async function getDailyExtremes(station, startDate, endDate, kind = "high") {
+  if (station.obsSource === "hko") return getHkoExtremes(startDate, endDate, kind);
   const rows = await fetchAsos(station, startDate, endDate);
   const dates = [...new Set(rows.map(r => String(r.valid).slice(0, 10)))].sort();
   const out = {};
@@ -106,7 +124,51 @@ async function getDailyExtremes(station, startDate, endDate, kind = "high") {
   return out;
 }
 
+// ── Hong Kong Observatory ───────────────────────────────────────
+// The one market that does not resolve off METAR. HKO publishes the HQ gauge's daily
+// maximum/minimum to 0.1 C via its open-data CSV, which IS the resolution field —
+// so it is read directly rather than reconstructed from hourly readings.
+// Note the publication lag: the current month returns headers only, which is why Hong Kong
+// carries a much longer settle grace than the METAR stations.
+
+// "2026,7,29,27.9,C" -> { "2026-07-29": 27.9 }. Rows flagged incomplete are dropped.
+function parseHkoCsv(text, year, month) {
+  const out = {};
+  for (const line of String(text).split("\n")) {
+    const m = line.trim().match(/^(\d{4}),(\d{1,2}),(\d{1,2}),([-\d.]+)(?:,\s*"?([A-Z*#]*)"?)?/);
+    if (!m) continue;
+    if (Number(m[1]) !== year || Number(m[2]) !== month) continue;
+    const flag = (m[5] || "C").trim();
+    if (flag && flag !== "C") continue;                 // *** unavailable / # incomplete
+    const v = parseFloat(m[4]);
+    if (!isFinite(v)) continue;
+    out[`${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}`] = v;
+  }
+  return out;
+}
+
+async function fetchHkoMonth(year, month, kind = "high") {
+  await hkoLimiter.acquire();
+  const dataType = kind === "low" ? "CLMMINT" : "CLMMAXT";
+  const url = `${HKO}?dataType=${dataType}&year=${year}&month=${month}&station=HKO&rf=json`;
+  const { data } = await withRetry(() => ext.get(url, { responseType: "text" }), { label: `hko ${year}-${month}` });
+  return parseHkoCsv(data, year, month);
+}
+
+// Every month spanned by [startDate, endDate], merged.
+async function getHkoExtremes(startDate, endDate, kind = "high") {
+  const [y1, m1] = startDate.split("-").map(Number);
+  const [y2, m2] = endDate.split("-").map(Number);
+  const out = {};
+  for (let y = y1, m = m1; y < y2 || (y === y2 && m <= m2); m === 12 ? (m = 1, y++) : m++) {
+    try { Object.assign(out, await fetchHkoMonth(y, m, kind)); }
+    catch (e) { console.error(`[obs] hko ${y}-${m}: ${e.message}`); }
+  }
+  return Object.fromEntries(Object.entries(out).filter(([d]) => d >= startDate && d <= endDate));
+}
+
 module.exports = {
   getDailyExtreme, getDailyExtremes, fetchAsos, fetchRecentMetar,
   parseAsosCsv, dailyExtreme, localDateOf, metarRowsToObs,
+  parseHkoCsv, fetchHkoMonth, getHkoExtremes,
 };

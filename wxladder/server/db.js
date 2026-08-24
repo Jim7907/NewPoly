@@ -30,9 +30,11 @@ async function initDB() {
     marketDate TEXT, leadDays INTEGER, unit TEXT,
     rawCenter REAL, bias REAL, center REAL, sigma REAL, ensSd REAL, dispRatio REAL, regime TEXT,
     tvd REAL, width INTEGER, coverProb REAL, basketCost REAL, basketEv REAL, fillEv REAL,
-    overround REAL, budget REAL, outlay REAL, sizing TEXT,
+    overround REAL, budget REAL, outlay REAL, sizing TEXT, bucketRule TEXT,
     status TEXT DEFAULT 'open', resolvedAt TEXT, obsValue REAL, obsSource TEXT,
     winLabel TEXT, payout REAL, pnl REAL )`);
+
+  try { db.run(`ALTER TABLE baskets ADD COLUMN bucketRule TEXT`); } catch { /* already present */ }
 
   db.run(`CREATE TABLE IF NOT EXISTS legs (
     id TEXT PRIMARY KEY, basketId TEXT, label TEXT, deg REAL, type TEXT,
@@ -45,8 +47,10 @@ async function initDB() {
   // against `obs` this is exactly the training set bias.js fits on.
   db.run(`CREATE TABLE IF NOT EXISTS forecasts (
     id TEXT PRIMARY KEY, ts TEXT, station TEXT, kind TEXT, marketDate TEXT, leadDays INTEGER,
-    rawCenter REAL, ensSd REAL, ensMean REAL, detMean REAL, nMembers INTEGER )`);
+    rawCenter REAL, ensSd REAL, ensMean REAL, detMean REAL, detSd REAL, nMembers INTEGER )`);
   db.run(`CREATE INDEX IF NOT EXISTS fc_lookup ON forecasts(station, kind, leadDays)`);
+  // Migrate databases written before the multi-model dispersion track existed.
+  try { db.run(`ALTER TABLE forecasts ADD COLUMN detSd REAL`); } catch { /* already present */ }
 
   db.run(`CREATE TABLE IF NOT EXISTS obs (
     id TEXT PRIMARY KEY, station TEXT, kind TEXT, obsDate TEXT, value REAL, source TEXT, ts TEXT )`);
@@ -114,10 +118,10 @@ function effectiveParams() {
 // ── Forecast + observation logs (the bias training set) ──
 function logForecast(f) {
   const id = `f_${f.station}_${f.kind}_${f.marketDate}_${f.leadDays}`;
-  db.run(`INSERT OR REPLACE INTO forecasts (id,ts,station,kind,marketDate,leadDays,rawCenter,ensSd,ensMean,detMean,nMembers)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  db.run(`INSERT OR REPLACE INTO forecasts (id,ts,station,kind,marketDate,leadDays,rawCenter,ensSd,ensMean,detMean,detSd,nMembers)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, new Date().toISOString(), f.station, f.kind, f.marketDate, f.leadDays,
-     f.rawCenter ?? null, f.ensSd ?? null, f.ensMean ?? null, f.detMean ?? null, f.nMembers ?? null]);
+     f.rawCenter ?? null, f.ensSd ?? null, f.ensMean ?? null, f.detMean ?? null, f.detSd ?? null, f.nMembers ?? null]);
 }
 
 function logObs(o) {
@@ -139,10 +143,12 @@ function biasPairs(station, kind, leadDays, limit = 400) {
             ORDER BY f.marketDate DESC LIMIT ${+limit}`, [station, kind, leadDays]);
 }
 
-// Ensemble-spread history — kept separate because it survives days with no observation.
+// Spread history — kept separate from the bias pairs because it survives days with no
+// observation. Two tracks: the live ensemble spread, and the multi-model spread that can be
+// reconstructed for past dates and therefore seeded.
 function spreadRows(station, kind, leadDays, limit = 400) {
-  return q(`SELECT marketDate AS date, ensSd FROM forecasts
-            WHERE station=? AND kind=? AND leadDays=? AND ensSd IS NOT NULL
+  return q(`SELECT marketDate AS date, ensSd, detSd FROM forecasts
+            WHERE station=? AND kind=? AND leadDays=? AND (ensSd IS NOT NULL OR detSd IS NOT NULL)
             ORDER BY marketDate DESC LIMIT ${+limit}`, [station, kind, leadDays]);
 }
 
@@ -163,12 +169,13 @@ function placeBasket(plan, sizing) {
   const outlay = +funded.reduce((s, l) => s + l.dollars, 0).toFixed(4);
   db.run(`INSERT INTO baskets (id,ts,eventId,slug,city,station,kind,marketDate,leadDays,unit,
             rawCenter,bias,center,sigma,ensSd,dispRatio,regime,tvd,width,coverProb,basketCost,basketEv,fillEv,
-            overround,budget,outlay,sizing,status)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open')`,
+            overround,budget,outlay,sizing,bucketRule,status)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open')`,
     [id, new Date().toISOString(), plan.eventId, plan.slug, plan.city, plan.station, plan.kind,
      plan.date, plan.leadDays, plan.unit, plan.rawCenter, plan.bias, plan.center, plan.sigma,
      plan.ensSd, plan.dispRatio, plan.regime, plan.tvd, funded.length, plan.coverProb,
-     plan.basketCost, plan.basketEv, plan.fillEv, plan.overround, plan.budget, outlay, sizing || cfg.SIZING]);
+     plan.basketCost, plan.basketEv, plan.fillEv, plan.overround, plan.budget, outlay,
+     sizing || cfg.SIZING, plan.bucketRule || "round"]);
 
   for (const l of funded) {
     db.run(`INSERT INTO legs (id,basketId,label,deg,type,marketId,tokenId,prob,pModel,pMarket,ask,fillAsk,qEff,feePerShare,shares,dollars)
@@ -203,11 +210,15 @@ function settleBasket(basketId, obsValue, obsSource) {
     return { basketId, status: "void", refund: b.outlay };
   }
 
-  // The winning rung is the one whose bucket contains the observed integer. `deg`+`type`
-  // reconstruct the interval without needing Infinity to survive a round-trip through SQL.
-  const contains = (l) => l.type === "tail-low" ? obsValue <= l.deg
-    : l.type === "tail-high" ? obsValue >= l.deg
-      : obsValue === l.deg;
+  // The winning rung is the one whose bucket contains the observed reading, under the SAME
+  // rule the probabilities were built with — METAR hands us an integer where floor and round
+  // agree, but HKO hands us 31.6 and only the rule decides between "31C" and "32C".
+  // `deg`+`type` reconstruct the interval without needing Infinity to survive SQL.
+  const rule = b.bucketRule || "round";
+  const v = rule === "floor" ? Math.floor(obsValue) : Math.round(obsValue);
+  const contains = (l) => l.type === "tail-low" ? v <= l.deg
+    : l.type === "tail-high" ? v >= l.deg
+      : v === l.deg;
   let payout = 0, winLabel = null;
   for (const l of legs) {
     const won = contains(l) ? 1 : 0;

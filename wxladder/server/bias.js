@@ -46,14 +46,23 @@ function fitBias(pairs, { asOf, windowDays = 30, halfLifeDays = 10, clampTo = 4 
   };
 }
 
-// Median ensemble spread for this station+kind+lead, used as the denominator of the
-// underdispersion ratio. Kept separate from the bias fit because spread history survives
-// even on days we have no observation for yet.
-function spreadHistory(rows, { asOf, windowDays = 60 } = {}) {
-  return (rows || [])
-    .filter(r => r && r.ensSd != null && isFinite(r.ensSd) && r.ensSd > 0)
-    .filter(r => !asOf || (daysBetween(r.date, asOf) >= 0 && daysBetween(r.date, asOf) <= windowDays))
-    .map(r => r.ensSd);
+// Spread history for this station+kind+lead — the denominator of the underdispersion ratio.
+// Kept separate from the bias fit because it survives days we have no observation for.
+//
+// Two tracks, deliberately NOT pooled: ensemble spread (120+ members) and multi-model spread
+// (4 deterministic runs) live on different scales, so a median mixing them would be
+// meaningless. The filter prefers the ensemble track and falls back to the multi-model one,
+// which is the only track that can be seeded from history.
+function spreadTracks(rows, { asOf, windowDays = 60 } = {}) {
+  const inWindow = (rows || []).filter(r =>
+    r && (!asOf || (daysBetween(r.date, asOf) >= 0 && daysBetween(r.date, asOf) <= windowDays)));
+  const pick = (key) => inWindow
+    .filter(r => r[key] != null && isFinite(r[key]) && r[key] > 0)
+    .map(r => r[key]);
+  return { ens: pick("ensSd"), det: pick("detSd") };
 }
 
-module.exports = { fitBias, spreadHistory, daysBetween };
+// Back-compatible accessor: just the ensemble track.
+const spreadHistory = (rows, opts) => spreadTracks(rows, opts).ens;
+
+module.exports = { fitBias, spreadTracks, spreadHistory, daysBetween };

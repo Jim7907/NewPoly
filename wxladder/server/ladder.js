@@ -133,10 +133,22 @@ function buildLadder(input, p = cfg) {
   out.ensMean = forecast.ensMean; out.detMean = forecast.detMean; out.nMembers = forecast.nMembers;
 
   // ── 2. Underdispersion filter (art. §6) ──
-  const dispRatio = M.dispersionRatio(forecast.ensSd, spreadHist, p.MIN_DISP_SAMPLES);
+  // Prefer the ensemble track; fall back to the multi-model track, which is the one that can
+  // be seeded from history. Comparing today's spread against its OWN track's median is what
+  // keeps the ratio meaningful — the two scales are never pooled.
+  const tracks = Array.isArray(spreadHist) ? { ens: spreadHist, det: [] } : (spreadHist || { ens: [], det: [] });
+  let dispRatio = M.dispersionRatio(forecast.ensSd, tracks.ens || [], p.MIN_DISP_SAMPLES);
+  let dispSource = dispRatio != null ? "ensemble" : null;
+  if (dispRatio == null) {
+    dispRatio = M.dispersionRatio(forecast.detSd, tracks.det || [], p.MIN_DISP_SAMPLES);
+    if (dispRatio != null) dispSource = "multi-model";
+  }
   const regime = M.dispersionRegime(dispRatio, p.UNDERDISP_LO, p.OVERDISP_HI);
-  out.ensSd = forecast.ensSd; out.dispRatio = dispRatio == null ? null : +dispRatio.toFixed(3);
-  out.regime = regime; out.spreadSamples = spreadHist.length;
+  out.ensSd = forecast.ensSd; out.detSd = forecast.detSd ?? null;
+  out.dispRatio = dispRatio == null ? null : +dispRatio.toFixed(3);
+  out.dispSource = dispSource; out.regime = regime;
+  out.spreadSamples = (tracks.ens || []).length;
+  out.detSpreadSamples = (tracks.det || []).length;
 
   // ── 3. Predictive sigma, anchored on this station's REALIZED post-correction error ──
   const sigma = M.predictiveSigma({
@@ -146,10 +158,15 @@ function buildLadder(input, p = cfg) {
   out.sigma = +sigma.toFixed(3);
 
   // ── 4. Model distribution over the buckets ──
-  let pModel = M.bucketProbs(lad.buckets, center, sigma);
+  // The bucket rule is per-station: METAR reports whole degrees ("round"), while the HK
+  // Observatory reports 0.1 C and the market takes the containing range ("floor"). The two
+  // sit half a degree apart, so using the wrong one mis-centres every rung.
+  const rule = lad.station.bucketRule || "round";
+  out.bucketRule = rule;
+  let pModel = M.bucketProbs(lad.buckets, center, sigma, rule);
   if (p.EMPIRICAL_W > 0 && forecast.members && forecast.members.length > 4) {
     const shifted = forecast.members.map(v => v + bias);
-    pModel = M.blendProbs(pModel, M.empiricalBucketProbs(lad.buckets, shifted), p.EMPIRICAL_W);
+    pModel = M.blendProbs(pModel, M.empiricalBucketProbs(lad.buckets, shifted, 1, rule), p.EMPIRICAL_W);
   }
 
   // ── 5. Price every bucket; de-vig the book into a market distribution ──

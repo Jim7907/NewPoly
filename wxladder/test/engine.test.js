@@ -109,6 +109,27 @@ test("tryEnter refuses a plan with fewer rungs than the ladder minimum", () => {
   assert.equal(engine.tryEnter(p), null);
 });
 
+test("a floor-rule basket settles on the containing range, not the nearest degree", () => {
+  // Hong Kong: HKO publishes 31.6 and Polymarket resolves it to "31°C", NOT "32°C".
+  // Getting this backwards would pay out the wrong rung on roughly two days in three.
+  const hk = plan({ eventId: "hk1", city: "Hong Kong", station: "HKO", bucketRule: "floor" });
+  hk.legs = [
+    { idx: 4, label: "30°C", deg: 30, type: "exact", marketId: "h30", tokenId: "x30", prob: 0.3, ask: 0.30, fillAsk: 0.30, qEff: 0.30, shares: 100, dollars: 30 },
+    { idx: 5, label: "31°C", deg: 31, type: "exact", marketId: "h31", tokenId: "x31", prob: 0.3, ask: 0.20, fillAsk: 0.20, qEff: 0.20, shares: 100, dollars: 20 },
+    { idx: 6, label: "32°C", deg: 32, type: "exact", marketId: "h32", tokenId: "x32", prob: 0.2, ask: 0.10, fillAsk: 0.10, qEff: 0.10, shares: 100, dollars: 10 },
+  ];
+  const id = db.placeBasket(hk, "kelly");
+  const r = db.settleBasket(id, 31.6, "hko-daily-extract");
+  assert.equal(r.winLabel, "31°C", "floor(31.6) = 31");
+  assert.equal(r.payout, 100);
+
+  // The same reading under the METAR round rule settles one bucket higher.
+  const metar = plan({ eventId: "m1" });
+  metar.legs = hk.legs.map(l => ({ ...l }));
+  const id2 = db.placeBasket(metar, "kelly");   // plan() carries no bucketRule => "round"
+  assert.equal(db.settleBasket(id2, 31.6, "iem-asos").winLabel, "32°C", "round(31.6) = 32");
+});
+
 test("forecast and observation logs join into the bias training set", () => {
   for (let i = 10; i <= 20; i++) {
     const d = `2026-08-${String(i).padStart(2, "0")}`;

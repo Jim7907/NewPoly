@@ -32,6 +32,24 @@ test("dailyExtreme refuses to resolve a day it barely observed", () => {
   assert.equal(obs.dailyExtreme(rows, "2026-01-01", "high", 1), null);
 });
 
+test("parseHkoCsv reads the HK Observatory daily extract and drops flagged rows", () => {
+  const csv = [
+    '"Daily Maximum Temperature (°C) at the Hong Kong Observatory"',
+    "Year,Month,Day,Value,Completeness",
+    "2026,7,29,27.9,C",
+    "2026,7,30,28.8,C",
+    "2026,7,31,27.6,#",      // incomplete
+    "2026,7,28,***,*",       // unavailable
+    "2026,8,1,30.0,C",       // different month
+  ].join("\n");
+  assert.deepEqual(obs.parseHkoCsv(csv, 2026, 7), { "2026-07-29": 27.9, "2026-07-30": 28.8 });
+  assert.deepEqual(obs.parseHkoCsv("", 2026, 7), {});
+  // The published value keeps its 0.1 C precision — that precision is the whole reason
+  // Hong Kong needs the floor bucket rule rather than the METAR round rule.
+  const one = obs.parseHkoCsv("2026,1,5,-1.4,C", 2026, 1);
+  assert.equal(one["2026-01-05"], -1.4);
+});
+
 test("localDateOf projects a METAR timestamp into the station's local day", () => {
   const t = Math.floor(Date.parse("2026-08-24T02:30:00Z") / 1000);
   assert.equal(obs.localDateOf(t, "Asia/Singapore"), "2026-08-24");

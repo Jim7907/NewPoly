@@ -93,6 +93,35 @@ test("the dispersion filter stays off until it has enough spread history", () =>
   assert.equal(o.budgetMult, 1, "an unknown regime is treated as normal, not as conviction");
 });
 
+test("the filter falls back to the seedable multi-model track when live spread is thin", () => {
+  // Historical ensemble members are unavailable, so a freshly-seeded station has a long
+  // multi-model track and almost no ensemble track. The filter should still work.
+  const detTrack = Array.from({ length: 20 }, () => 0.8);
+  const fc = { ...forecast(30.5, 1.0), detSd: 0.4 };     // today's models agree unusually well
+
+  const seeded = build({ forecast: fc, spreadHist: { ens: spreadHist(2), det: detTrack } });
+  assert.equal(seeded.dispSource, "multi-model");
+  assert.equal(seeded.dispRatio, 0.5);
+  assert.equal(seeded.regime, "tight", "a seeded station can press from day one");
+  assert.equal(seeded.detSpreadSamples, 20);
+
+  // Once enough live ensemble spread exists, the ensemble track takes precedence.
+  const mature = build({ forecast: fc, spreadHist: { ens: spreadHist(20, 1.0), det: detTrack } });
+  assert.equal(mature.dispSource, "ensemble");
+  assert.ok(Math.abs(mature.dispRatio - 1.0) < 0.15, "measured against the ensemble median, not the model one");
+
+  // Neither track long enough => no regime, and no conviction bonus.
+  const cold = build({ forecast: fc, spreadHist: { ens: spreadHist(2), det: [0.8, 0.9] } });
+  assert.equal(cold.dispSource, null);
+  assert.equal(cold.regime, "unknown");
+});
+
+test("a plain array of spreads is still accepted as the ensemble track", () => {
+  const o = build({ spreadHist: spreadHist(20) });
+  assert.equal(o.dispSource, "ensemble");
+  assert.ok(o.dispRatio != null);
+});
+
 test("SKIP_WHEN_WIDE sits the day out entirely", () => {
   const o = build({ forecast: forecast(30.5, 1.9) }, { SKIP_WHEN_WIDE: true });
   assert.ok(o.reasons.includes("ensemble-wide"));

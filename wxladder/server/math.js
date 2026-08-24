@@ -30,31 +30,50 @@ function erf(x) {
 const normCdf = (z) => 0.5 * (1 + erf(z / Math.SQRT2));
 
 // ── Bucket probabilities ────────────────────────────────────────
-// Polymarket resolves on the station's METAR reading, which is reported in WHOLE degrees.
-// So bucket "31C" is the event round(T)==31, i.e. the latent T falls in [30.5, 31.5).
-// A bucket is {lo, hi} in integer degrees: interior lo===hi===k; "k or below" is
+// How a bucket label maps onto the latent continuous temperature. This is NOT cosmetic:
+// the two rules sit half a degree apart, which on a sigma near 1 C is a large, silent
+// probability error in every rung.
+//
+//   "round" — the source reports WHOLE degrees (METAR), so bucket "31C" is round(T)==31,
+//             i.e. T in [30.5, 31.5). Used by all 31 NOAA-resolved cities.
+//   "floor" — the source reports finer than the buckets (HK Observatory, 0.1 C) and the
+//             market resolves to "the range that contains" it, so "31C" is T in [31.0, 32.0).
+//             Verified against 31 resolved Hong Kong markets: floor matched 31/31.
+const BUCKET_OFFSETS = { round: [-0.5, 0.5], floor: [0, 1] };
+
+// A bucket is {lo, hi} in whole degrees: interior lo===hi===k; "k or below" is
 // {lo:-Infinity, hi:k}; "k or higher" is {lo:k, hi:Infinity}.
-function bucketProb(bucket, mu, sd) {
+function bucketProb(bucket, mu, sd, rule = "round") {
   if (!(sd > 0)) return null;
-  const below = bucket.hi === Infinity ? 1 : normCdf((bucket.hi + 0.5 - mu) / sd);
-  const above = bucket.lo === -Infinity ? 0 : normCdf((bucket.lo - 0.5 - mu) / sd);
+  const [loOff, hiOff] = BUCKET_OFFSETS[rule] || BUCKET_OFFSETS.round;
+  const below = bucket.hi === Infinity ? 1 : normCdf((bucket.hi + hiOff - mu) / sd);
+  const above = bucket.lo === -Infinity ? 0 : normCdf((bucket.lo + loOff - mu) / sd);
   return clamp(below - above, 0, 1);
 }
 
 // Probabilities across a full bucket ladder, renormalized so they sum to 1 (the buckets
 // are mutually exclusive and exhaustive by construction, so this only fixes erf error).
-function bucketProbs(buckets, mu, sd) {
-  const raw = buckets.map(b => bucketProb(b, mu, sd) ?? 0);
+function bucketProbs(buckets, mu, sd, rule = "round") {
+  const raw = buckets.map(b => bucketProb(b, mu, sd, rule) ?? 0);
   const t = sum(raw);
   return t > 0 ? raw.map(p => p / t) : raw;
 }
 
+// Which bucket a settled reading falls in, under the same rule. METAR hands us an integer
+// and floor/round agree; HKO hands us 31.6 and only the rule decides.
+function bucketOf(bucket, value, rule = "round") {
+  const v = rule === "floor" ? Math.floor(value) : Math.round(value);
+  if (bucket.lo === -Infinity) return v <= bucket.hi;
+  if (bucket.hi === Infinity) return v >= bucket.lo;
+  return v >= bucket.lo && v <= bucket.hi;
+}
+
 // Empirical bucket probabilities from ensemble member outcomes (already bias-shifted),
 // with add-one (Laplace) smoothing so a bucket no member visited is not called impossible.
-function empiricalBucketProbs(buckets, members, alpha = 1) {
+function empiricalBucketProbs(buckets, members, alpha = 1, rule = "round") {
   const counts = buckets.map(() => alpha);
   for (const v of members) {
-    const k = Math.round(v);
+    const k = rule === "floor" ? Math.floor(v) : Math.round(v);
     let idx = buckets.findIndex(b => k >= b.lo && k <= b.hi);
     if (idx < 0) idx = k < buckets[0].hi ? 0 : buckets.length - 1;
     counts[idx] += 1;
@@ -187,7 +206,7 @@ function equalShareWeights(legs) {
 
 module.exports = {
   clamp, sum, mean, stdev, quantile, median, erf, normCdf,
-  bucketProb, bucketProbs, empiricalBucketProbs, blendProbs, impliedProbs, tvd,
+  bucketProb, bucketProbs, bucketOf, BUCKET_OFFSETS, empiricalBucketProbs, blendProbs, impliedProbs, tvd,
   dispersionRatio, predictiveSigma, dispersionRegime,
   feePerShare, effCost, legEv, basketMetrics,
   kellyAllocate, probWeights, equalShareWeights,

@@ -34,15 +34,24 @@ the 'Temp' column for all times on this day, available at
 | Taipei | **RCSS** — Songshan, not Taoyuan | Moscow | **UUWW** — Vnukovo |
 | Milan | **LIMC** — Malpensa | Seoul | **RKSI** — Incheon |
 
-All 32 stations, with the coordinates the METAR API reports for them, are in
-[`server/config.js`](server/config.js). Hong Kong is listed but **excluded by default**: it
-resolves off the HK Observatory's *Absolute Daily Max* to 0.1 °C, a different instrument and a
-different rounding rule from the METAR pipeline everything here is verified against.
+All 32 METAR stations, with the coordinates the METAR API reports for them, are in
+[`server/config.js`](server/config.js).
 
-**2. The resolved value is an integer.** The source reports whole degrees, so bucket "31°C" is
-the event `round(T) == 31`. Bucket probabilities are therefore computed on the **±0.5 rounding
-boundaries** of a latent continuous temperature, and settlement takes the max (or min) of the
-station's rounded readings across its **local** calendar day.
+**Hong Kong is the exception, and every difference matters.** It resolves off the HK
+Observatory *headquarters* gauge in Tsim Sha Tsui — not the airport, which sits ~26 km west and
+differed from HQ by ≥1 °C on 13 of 31 days in July 2026 (worth ~0.74 °C of bias). HKO publishes
+to 0.1 °C, so the buckets are *ranges* rather than rounded integers. Checked against 31 resolved
+Hong Kong markets, `floor(T)` matched **31/31** while `round(T)` matched only **12/31** — so
+"31°C" there is `[31.0, 32.0)`, half a degree off every other city. The bucket rule is therefore
+per-station (`bucketRule: "round" | "floor"`), and it drives both the probabilities and the
+settlement. HKO's Daily Extract also publishes about a month in arrears, so Hong Kong carries a
+longer settle grace and a wider bias window rather than being voided or left uncalibrated.
+
+**2. The resolved value's precision sets the bucket boundaries.** For the 32 NOAA cities the
+source reports whole degrees, so bucket "31°C" is `round(T) == 31` and probabilities use the
+**±0.5** boundaries of a latent continuous temperature. For Hong Kong the source reports 0.1 °C
+and the market takes the containing range, so "31°C" is `[31.0, 32.0)`. Settlement takes the max
+(or min) across the station's **local** calendar day under the same rule.
 
 **3. These markets charge a taker fee.** They return
 `feeSchedule {exponent: 1, rate: 0.05, takerOnly: true}` ⇒ `fee/share = 0.05·min(q, 1−q)`.
@@ -139,10 +148,13 @@ P_used = W_MODEL·P_model + (1−W_MODEL)·P_market            (market de-vigged
 - **normal** — widths 3–4, budget ×1
 - **wide** (≥ 1.25) — sigma inflates, cluster widens to 4, budget ×0.5 (or sit out entirely)
 
-This one **cannot be seeded**: Open-Meteo returns nulls for past-date ensemble members, so
-historical spread is unavailable. It reports `regime: unknown` (treated as normal, no conviction
-bonus) until `MIN_DISP_SAMPLES` days of live spread have accumulated. Stated plainly rather than
-papered over.
+Open-Meteo returns nulls for past-date ensemble members, so the *ensemble* spread cannot be
+reconstructed historically. The spread **across the deterministic models** can be, so the filter
+keeps two tracks and prefers the ensemble one, falling back to the multi-model one that seeding
+fills in. The two are never pooled — 120 members and 4 models live on different scales, so each
+is compared against its own median. In practice this means the filter is live from first boot
+(`dispSource: "multi-model"`) and migrates to `"ensemble"` as live spread accumulates; it reports
+`regime: unknown` with no conviction bonus only while both tracks are short.
 
 ### Sizing
 
@@ -162,6 +174,7 @@ true "any rung pays the same dollar" basket.
 | `MIN_BASKET_EV` | 0.08 | After fees, slippage, and the book's overround |
 | `MIN_COVER_PROB` | 0.70 | The cluster has to actually cover |
 | `MIN_BIAS_SAMPLES` | 8 | **Refuses to trade an uncalibrated station at all** |
+| `bucketRule` | per station | `round` for METAR, `floor` for Hong Kong — half a degree apart |
 | `MIN_LEG_DEPTH_USD` / `MIN_ORDER_SHARES` | 20 / 5 | A rung that cannot be filled is not bought |
 | `BUDGET_FRAC` / `AGG_CAP` | 0.02 / 0.25 | Per-market and aggregate exposure |
 
@@ -254,5 +267,10 @@ Then open `http://<vps-ip>:3003`. Without Docker, use `systemd/wxladder.service`
   uncalibrated station is refused rather than traded with a shrug.
 - **Fees are modelled, not waved at.** Every leg pays `0.05·min(q,1−q)` per share plus slippage,
   and the EV gate is applied after them.
-- The underdispersion filter is the least-proven component: it ships enabled but with no
-  conviction bonus until it has real spread history, and `SKIP_WHEN_WIDE` is off by default.
+- The underdispersion filter is the least-proven component: it ships enabled, seeded off the
+  multi-model track, and `SKIP_WHEN_WIDE` is off by default. Whether the "tight ensemble" regime
+  really earns its 1.5x budget is a forward question the CALIBRATION tab answers per regime.
+- **Liquidity is the binding constraint, not ideas.** These books are thin — a rung frequently
+  shows only $20-40 within 3c of touch, so per-market capacity is tens of dollars, not hundreds.
+  The depth gate and the fill-walk exist because pushing size through them is what turns a +EV
+  basket negative.

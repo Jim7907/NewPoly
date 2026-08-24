@@ -4,9 +4,10 @@
 //
 // Known limits, stated rather than hidden:
 //   • Open-Meteo's ENSEMBLE endpoint returns nulls for past dates, so historical ensemble
-//     SPREAD is not retrievable. Seeding therefore calibrates the center (bias) and the
-//     predictive sigma, but NOT the underdispersion ratio — that denominator has to
-//     accumulate live, and the filter reports regime "unknown" until it has.
+//     SPREAD is not retrievable. The spread ACROSS the deterministic models is, though, so
+//     seeding calibrates the center (bias), the predictive sigma, AND a multi-model
+//     dispersion track that the underdispersion filter falls back to until enough live
+//     ensemble spread has accumulated.
 //   • The historical-forecast archive stores the short-lead forecast for each day, so a
 //     seeded pair is approximately lead 1. Live logging refines the per-lead fit from there.
 const wx = require("./wx");
@@ -33,7 +34,7 @@ async function gather(station, kind, startDate, endDate) {
     const o = observed[date];
     if (o == null || f.rawCenter == null) continue;
     out.push({
-      date, rawCenter: f.rawCenter, detMean: f.detMean, obs: o,
+      date, rawCenter: f.rawCenter, detMean: f.detMean, detSd: f.detSd, obs: o,
       err: +(o - f.rawCenter).toFixed(3),
     });
   }
@@ -48,8 +49,11 @@ async function seedStation(db, station, kind, days = 45, leadDays = 1, endDate =
   const pairs = await gather(station, kind, start, end);
   for (const p of pairs) {
     db.logForecast({
+      // ensSd stays null: historical ensemble members are not retrievable. detSd is, and
+      // it seeds the dispersion track the underdispersion filter falls back to.
       station: station.icao, kind, marketDate: p.date, leadDays,
-      rawCenter: p.rawCenter, ensSd: null, ensMean: null, detMean: p.detMean, nMembers: 0,
+      rawCenter: p.rawCenter, ensSd: null, ensMean: null,
+      detMean: p.detMean, detSd: p.detSd, nMembers: 0,
     });
     db.logObs({ station: station.icao, kind, date: p.date, value: p.obs, source: "iem-asos" });
   }

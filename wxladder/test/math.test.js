@@ -17,6 +17,45 @@ test("bucketProb uses the +/-0.5 rounding boundaries the METAR resolution implie
   assert.ok(exact > 0.38 && exact < 0.39);
 });
 
+test("the floor rule sits a HALF DEGREE from the round rule", () => {
+  // METAR cities report whole degrees => bucket "31C" is round(T)==31, i.e. [30.5, 31.5).
+  // Hong Kong reports 0.1 C and resolves to the containing range => "31C" is [31.0, 32.0).
+  // Verified against 31 resolved HK markets: floor matched 31/31, round only 12/31.
+  const b = { lo: 31, hi: 31 };
+  const sd = 0.02;                                  // tight enough that the rule alone decides
+  // A latent temperature of 31.6 is "32C" under round, but "31C" under floor.
+  assert.ok(m.bucketProb(b, 31.6, sd, "floor") > 0.99);
+  assert.ok(m.bucketProb(b, 31.6, sd, "round") < 0.01);
+  // ...and 30.7 is "31C" under round but "30C" under floor.
+  assert.ok(m.bucketProb(b, 30.7, sd, "round") > 0.99);
+  assert.ok(m.bucketProb(b, 30.7, sd, "floor") < 0.01);
+  assert.deepEqual(m.BUCKET_OFFSETS.round, [-0.5, 0.5]);
+  assert.deepEqual(m.BUCKET_OFFSETS.floor, [0, 1]);
+  // An unknown rule must not silently invent a third convention.
+  assert.equal(m.bucketProb(b, 31.6, sd, "nonsense"), m.bucketProb(b, 31.6, sd, "round"));
+});
+
+test("bucketProbs still partition under either rule, including the tails", () => {
+  const bk = [{ lo: -Infinity, hi: 28 }, { lo: 29, hi: 29 }, { lo: 30, hi: 30 }, { lo: 31, hi: Infinity }];
+  for (const rule of ["round", "floor"]) {
+    for (const mu of [27, 30.4, 33]) {
+      const p = m.bucketProbs(bk, mu, 1.1, rule);
+      assert.ok(Math.abs(m.sum(p) - 1) < 1e-9, `${rule} @ ${mu}`);
+    }
+  }
+});
+
+test("bucketOf places a settled reading under the matching rule", () => {
+  assert.equal(m.bucketOf({ lo: 31, hi: 31 }, 31.6, "floor"), true);
+  assert.equal(m.bucketOf({ lo: 32, hi: 32 }, 31.6, "floor"), false);
+  assert.equal(m.bucketOf({ lo: 32, hi: 32 }, 31.6, "round"), true);
+  // Tails.
+  assert.equal(m.bucketOf({ lo: -Infinity, hi: 25 }, 25.4, "floor"), true);
+  assert.equal(m.bucketOf({ lo: 35, hi: Infinity }, 35.9, "floor"), true);
+  assert.equal(m.bucketOf({ lo: 35, hi: Infinity }, 34.6, "floor"), false);
+  assert.equal(m.bucketOf({ lo: 35, hi: Infinity }, 34.6, "round"), true, "round pulls 34.6 up to 35");
+});
+
 test("bucketProb handles both open tails", () => {
   const low = m.bucketProb({ lo: -Infinity, hi: 25 }, 30, 1.5);
   const high = m.bucketProb({ lo: 35, hi: Infinity }, 30, 1.5);

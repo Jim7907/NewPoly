@@ -14,6 +14,7 @@
 const axios = require("axios");
 const cfg = require("./config");
 const { mean, stdev } = require("./math");
+const { RateLimiter, withRetry } = require("./ratelimit");
 
 const ENSEMBLE_API = "https://ensemble-api.open-meteo.com/v1/ensemble";
 const FORECAST_API = "https://api.open-meteo.com/v1/forecast";
@@ -24,28 +25,8 @@ const ext = axios.create({ timeout: 45000, headers: { Accept: "application/json"
 // Ensemble payloads are large (120+ member series) and Open-Meteo occasionally stalls under
 // a burst of station requests. One retry turns a transient stall into a slow success rather
 // than a station silently missing its forecast for the whole TTL window.
-async function getWithRetry(url, tries = 2) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try { return await ext.get(url); }
-    catch (e) { lastErr = e; if (i < tries - 1) await new Promise(r => setTimeout(r, 1500 * (i + 1))); }
-  }
-  throw lastErr;
-}
+const getWithRetry = (url) => withRetry(() => ext.get(url), { tries: 3, label: "open-meteo" });
 
-// ── Token-bucket rate limiter (Open-Meteo free tier is generous but not unlimited) ──
-class RateLimiter {
-  constructor(ratePerSec, burst) { this.rate = ratePerSec; this.tokens = burst; this.burst = burst; this.last = Date.now(); }
-  async acquire() {
-    for (;;) {
-      const now = Date.now();
-      this.tokens = Math.min(this.burst, this.tokens + (now - this.last) / 1000 * this.rate);
-      this.last = now;
-      if (this.tokens >= 1) { this.tokens -= 1; return; }
-      await new Promise(r => setTimeout(r, Math.ceil((1 - this.tokens) / this.rate * 1000)));
-    }
-  }
-}
 const limiter = new RateLimiter(3, 6);
 
 // ── Pure helpers (unit-tested) ──────────────────────────────────
@@ -118,6 +99,11 @@ function combine({ members, byModel, det }, wDet = cfg.W_DET) {
   const detVals = det ? Object.values(det).filter(v => v != null && isFinite(v)) : [];
   const detMean = detVals.length ? mean(detVals) : null;
   const detSpread = detVals.length > 1 ? Math.max(...detVals) - Math.min(...detVals) : null;
+  // Disagreement ACROSS the deterministic models is a second, coarser dispersion signal.
+  // It matters because it is the only one that can be reconstructed for past dates — the
+  // ensemble endpoint serves nulls historically — so it is what lets the underdispersion
+  // filter start calibrated instead of waiting ~10 days to accumulate live spread.
+  const detSd = detVals.length > 1 ? stdev(detVals) : null;
 
   let raw;
   if (detMean != null && ensMean != null) raw = wDet * detMean + (1 - wDet) * ensMean;
@@ -129,6 +115,7 @@ function combine({ members, byModel, det }, wDet = cfg.W_DET) {
     ensSd: ensSd == null ? null : +ensSd.toFixed(4),
     detMean: detMean == null ? null : +detMean.toFixed(3),
     detSpread: detSpread == null ? null : +detSpread.toFixed(3),
+    detSd: detSd == null ? null : +detSd.toFixed(4),
     nMembers: members.length,
     perModelMean: Object.fromEntries(Object.entries(byModel || {}).map(([k, v]) => [k, +mean(v).toFixed(2)])),
     members,

@@ -58,6 +58,21 @@ test("spreadHistory keeps only usable, in-window spreads", () => {
   assert.deepEqual(bias.spreadHistory([], {}), []);
 });
 
+test("spreadTracks keeps the two dispersion scales apart", () => {
+  // Seeded rows carry only detSd (historical ensemble members are not retrievable); live
+  // rows carry both. Pooling them would take a median across two different scales.
+  const rows = [
+    { date: "2026-08-20", ensSd: 1.1, detSd: 0.4 },   // live
+    { date: "2026-08-19", ensSd: null, detSd: 0.5 },  // seeded
+    { date: "2026-08-18", ensSd: null, detSd: null },
+    { date: "2026-01-01", ensSd: 9.9, detSd: 9.9 },   // out of window
+  ];
+  const t = bias.spreadTracks(rows, { asOf: "2026-08-21", windowDays: 60 });
+  assert.deepEqual(t.ens, [1.1]);
+  assert.deepEqual(t.det, [0.4, 0.5]);
+  assert.deepEqual(bias.spreadTracks([], {}), { ens: [], det: [] });
+});
+
 test("daysBetween handles month boundaries", () => {
   assert.equal(bias.daysBetween("2026-08-31", "2026-09-01"), 1);
   assert.equal(bias.daysBetween("2026-08-10", "2026-08-15"), 5);
