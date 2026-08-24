@@ -25,7 +25,7 @@ const ext = axios.create({ timeout: 45000, headers: { Accept: "application/json"
 // Ensemble payloads are large (120+ member series) and Open-Meteo occasionally stalls under
 // a burst of station requests. One retry turns a transient stall into a slow success rather
 // than a station silently missing its forecast for the whole TTL window.
-const getWithRetry = (url) => withRetry(() => ext.get(url), { tries: 3, label: "open-meteo" });
+const getWithRetry = (url) => withRetry(() => ext.get(url), { tries: 2, label: "open-meteo" });
 
 const limiter = new RateLimiter(3, 6);
 

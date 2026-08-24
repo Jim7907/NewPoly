@@ -91,6 +91,7 @@ const cfg = {
   DB_PATH:  str("DB_PATH", null),
   SCAN_MS:  num("SCAN_MS", 120000),        // markets are daily; a 2-min loop is plenty
   WX_TTL_MIN: num("WX_TTL_MIN", 45),       // forecast cache TTL (model runs are 6-12h apart)
+  WX_CONCURRENCY: num("WX_CONCURRENCY", 6), // parallel station forecasts per scan
 
   KINDS:    str("KINDS", "high,low").split(",").map(s => s.trim()).filter(Boolean),
 

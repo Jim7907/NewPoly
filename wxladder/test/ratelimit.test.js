@@ -44,3 +44,18 @@ test("withRetry honours Retry-After when the server sends one", async () => {
 test("withRetry surfaces the last error after exhausting its tries", async () => {
   await assert.rejects(() => withRetry(async () => { throw err(429); }, { tries: 2, baseMs: 1 }), /429/);
 });
+
+test("mapLimit preserves order, caps concurrency, and isolates failures", async () => {
+  const { mapLimit } = require("../server/ratelimit");
+  let inFlight = 0, peak = 0;
+  const out = await mapLimit([1, 2, 3, 4, 5, 6, 7, 8], 3, async (x) => {
+    peak = Math.max(peak, ++inFlight);
+    await new Promise(r => setTimeout(r, 5));
+    inFlight--;
+    if (x === 4) throw new Error("boom");
+    return x * 10;
+  });
+  assert.deepEqual(out, [10, 20, 30, null, 50, 60, 70, 80], "order kept, failure isolated to its slot");
+  assert.ok(peak <= 3, `concurrency capped, saw ${peak}`);
+  assert.deepEqual(await mapLimit([], 3, async () => 1), []);
+});

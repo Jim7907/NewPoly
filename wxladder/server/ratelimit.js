@@ -42,4 +42,23 @@ async function withRetry(fn, { tries = 3, baseMs = 1500, label = "" } = {}) {
   throw lastErr;
 }
 
-module.exports = { RateLimiter, withRetry, sleep };
+// Bounded-concurrency map. The token bucket already protects the upstream, so the only
+// thing serial iteration buys is latency: at 33 cities x 2 kinds a single slow station
+// blocks all 65 behind it, and one scan can outlive the interval that triggers the next.
+// Results keep input order; a rejected item resolves to null rather than sinking the batch.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      try { out[i] = await fn(items[i], i); }
+      catch { out[i] = null; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
+
+module.exports = { RateLimiter, withRetry, sleep, mapLimit };

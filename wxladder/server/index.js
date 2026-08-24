@@ -15,6 +15,7 @@ const ladderMod = require("./ladder");
 const engine = require("./engine");
 const calib = require("./calib");
 const backtest = require("./backtest");
+const { mapLimit } = require("./ratelimit");
 
 const app = express();
 const server = http.createServer(app);
@@ -41,15 +42,15 @@ async function scanOnce() {
       nowMs: Date.now(), minLead: params.MIN_LEAD_DAYS, maxLead: params.MAX_LEAD_DAYS, kinds: params.KINDS,
     });
 
-    // Forecast once per station+kind that actually has a live market.
+    // Forecast once per station+kind that actually has a live market, a few at a time.
+    // Serially this is 65 round trips deep and a single stalled station delays every other.
     const need = [...new Set(tradable.filter(l => !l.unsupported).map(l => `${l.city}|${l.kind}`))];
-    const forecasts = {};
-    for (const key of need) {
+    const fetched = await mapLimit(need, cfg.WX_CONCURRENCY, async (key) => {
       const [city, kind] = key.split("|");
-      const station = cfg.UNIVERSE[city];
-      try { forecasts[key] = await wx.getForecast(station, kind); }
-      catch (e) { console.error(`[scan] wx ${city}/${kind}: ${e.message}`); }
-    }
+      try { return [key, await wx.getForecast(cfg.UNIVERSE[city], kind)]; }
+      catch (e) { console.error(`[scan] wx ${city}/${kind}: ${e.message}`); return [key, null]; }
+    });
+    const forecasts = Object.fromEntries(fetched.filter(r => r && r[1]));
 
     const bankroll = parseFloat(db.getSetting("paper_balance") || "0");
     const openExposure = db.openExposure();
