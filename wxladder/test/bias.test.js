@@ -77,3 +77,53 @@ test("daysBetween handles month boundaries", () => {
   assert.equal(bias.daysBetween("2026-08-31", "2026-09-01"), 1);
   assert.equal(bias.daysBetween("2026-08-10", "2026-08-15"), 5);
 });
+
+
+test("bias pools across leads while sigma stays lead-specific", () => {
+  // A station offset is a representativeness error (grid cell vs the real gauge), so it does
+  // not depend on forecast lead. Measured over 7 stations: pooled bias +1.26 at lead 1 vs
+  // +1.28 at lead 2. Pooling is therefore valid and buys ~3x the samples.
+  const mk = (date, lead, err) => ({ date, leadDays: lead, rawCenter: 20, obs: 20 + err });
+  const rows = [];
+  for (let i = 0; i < 12; i++) rows.push(mk(`2026-08-${String(10 + i).padStart(2, "0")}`, 1, 2));
+  for (let i = 0; i < 3; i++)  rows.push(mk(`2026-08-${String(10 + i).padStart(2, "0")}`, 2, 2));
+  const opts = { asOf: "2026-08-22", windowDays: 30, halfLifeDays: 999, minLeadPairs: 10, sigmaGrowth: 1.20 };
+
+  const lead1 = bias.fitBias(rows, { ...opts, targetLead: 1 });
+  const lead2 = bias.fitBias(rows, { ...opts, targetLead: 2 });
+
+  // Same pooled bias at both leads — the offset is shared.
+  assert.ok(Math.abs(lead1.bias - 2) < 1e-6);
+  assert.ok(Math.abs(lead2.bias - lead1.bias) < 1e-9, "bias must not depend on the target lead");
+  assert.equal(lead1.n, lead2.n, "both fits see every lead's pairs");
+
+  // Lead 1 has enough of its own pairs to measure sigma; lead 2 does not and is inflated.
+  assert.equal(lead1.sigmaSource, "measured-at-lead");
+  assert.equal(lead1.leadN, 12);
+  assert.equal(lead2.sigmaSource, "inflated-from-pooled");
+  assert.equal(lead2.leadN, 3);
+  assert.ok(lead2.sd >= lead1.sd, "a thinly-sampled longer lead is never MORE confident");
+});
+
+test("a lead with enough pairs measures its own sigma instead of inflating", () => {
+  const rows = [];
+  // Lead 1 tight, lead 2 genuinely wider — both well sampled.
+  for (let i = 0; i < 14; i++) rows.push({ date: `2026-08-${String(1 + i).padStart(2, "0")}`, leadDays: 1, rawCenter: 20, obs: 20 + (i % 2 ? 0.2 : -0.2) });
+  for (let i = 0; i < 14; i++) rows.push({ date: `2026-08-${String(1 + i).padStart(2, "0")}`, leadDays: 2, rawCenter: 20, obs: 20 + (i % 2 ? 2.0 : -2.0) });
+  const opts = { asOf: "2026-08-20", windowDays: 40, halfLifeDays: 999, minLeadPairs: 10, sigmaGrowth: 1.05 };
+  const l1 = bias.fitBias(rows, { ...opts, targetLead: 1 });
+  const l2 = bias.fitBias(rows, { ...opts, targetLead: 2 });
+  assert.equal(l1.sigmaSource, "measured-at-lead");
+  assert.equal(l2.sigmaSource, "measured-at-lead");
+  assert.ok(l1.sd < 0.5 && l2.sd > 1.5, "each lead reports its OWN spread, not the pool's");
+  assert.ok(l2.sd > l2.sdPooled, "measurement beats the inflation heuristic when available");
+});
+
+test("omitting targetLead keeps the original pooled behaviour", () => {
+  const rows = [{ date: "2026-08-20", leadDays: 1, rawCenter: 20, obs: 21 },
+                { date: "2026-08-19", leadDays: 2, rawCenter: 20, obs: 23 }];
+  const f = bias.fitBias(rows, { asOf: "2026-08-21", halfLifeDays: 999 });
+  assert.equal(f.sigmaSource, "pooled");
+  assert.equal(f.targetLead, null);
+  assert.ok(Math.abs(f.sd - f.sdPooled) < 1e-9);
+});

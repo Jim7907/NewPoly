@@ -130,6 +130,11 @@ function buildLadder(input, p = cfg) {
   out.bias = +bias.toFixed(3);
   out.center = +center.toFixed(2);
   out.biasSamples = biasFit ? biasFit.n : 0;
+  // Which lead the sigma actually describes, and whether it was measured at that lead or
+  // inflated from the pooled residual. Surfaced so a D+2 ladder cannot silently claim
+  // D+1-quality confidence.
+  out.sigmaSource = biasFit ? biasFit.sigmaSource || null : null;
+  out.biasSamplesAtLead = biasFit ? biasFit.leadN ?? null : null;
   out.ensMean = forecast.ensMean; out.detMean = forecast.detMean; out.nMembers = forecast.nMembers;
 
   // ── 2. Underdispersion filter (art. §6) ──

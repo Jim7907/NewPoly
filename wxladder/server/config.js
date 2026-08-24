@@ -123,6 +123,11 @@ const cfg = {
   BIAS_HALFLIFE_DAYS: num("BIAS_HALFLIFE_DAYS", 10),   // recent days weigh more (seasonal drift)
   MIN_BIAS_SAMPLES: num("MIN_BIAS_SAMPLES", 8),   // refuse to trade a station until it is calibrated
   BIAS_CLAMP:  num("BIAS_CLAMP", 4.0),            // deg C — never shift the center further than this
+  // The station offset is lead-invariant, so bias pools across leads; sigma does not, so it
+  // is measured per lead where possible and inflated from the pool otherwise. Measured growth
+  // lead1->lead2 was 0.98 over 42 pairs, so 1.05 is a small margin rather than a big penalty.
+  LEAD_SIGMA_GROWTH: num("LEAD_SIGMA_GROWTH", 1.05),
+  MIN_LEAD_PAIRS: num("MIN_LEAD_PAIRS", 10),      // pairs at a lead before trusting its own sigma
 
   // ── Underdispersion filter (art. §6) ───────────────────
   UNDERDISP_LO: num("UNDERDISP_LO", 0.85),  // today's spread / station median spread below this = tight

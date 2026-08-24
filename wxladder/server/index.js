@@ -67,9 +67,10 @@ async function scanOnce() {
           detMean: forecast.detMean, detSd: forecast.detSd, nMembers: forecast.nMembers,
         });
       }
-      const biasFit = bias.fitBias(db.biasPairs(lad.station.icao, lad.kind, lad.leadDays), {
+      const biasFit = bias.fitBias(db.biasPairsAllLeads(lad.station.icao, lad.kind), {
         asOf: lad.date, windowDays: lad.station.biasWindowDays ?? params.BIAS_WINDOW_DAYS,
         halfLifeDays: params.BIAS_HALFLIFE_DAYS, clampTo: params.BIAS_CLAMP,
+        targetLead: lad.leadDays, sigmaGrowth: params.LEAD_SIGMA_GROWTH, minLeadPairs: params.MIN_LEAD_PAIRS,
       });
       const spreadHist = bias.spreadTracks(db.spreadRows(lad.station.icao, lad.kind, lad.leadDays), { asOf: lad.date });
       plans.push({ lad, forecast, biasFit, spreadHist,
@@ -151,7 +152,7 @@ app.get("/api/stations", (req, res) => {
   const rows = [];
   for (const s of Object.values(cfg.UNIVERSE)) {
     for (const kind of kinds) {
-      const pairs = db.biasPairs(s.icao, kind, cfg.MIN_LEAD_DAYS);
+      const pairs = db.biasPairsAllLeads(s.icao, kind);
       const fit = bias.fitBias(pairs, { asOf: new Date().toISOString().slice(0, 10), windowDays: s.biasWindowDays ?? cfg.BIAS_WINDOW_DAYS, clampTo: cfg.BIAS_CLAMP });
       const spread = bias.spreadTracks(db.spreadRows(s.icao, kind, cfg.MIN_LEAD_DAYS));
       rows.push({

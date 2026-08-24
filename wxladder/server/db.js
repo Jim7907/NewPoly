@@ -136,11 +136,24 @@ function getObs(station, kind, date) {
 
 // Forecast/observation pairs for one station+kind+lead — bias.fitBias consumes these directly.
 function biasPairs(station, kind, leadDays, limit = 400) {
-  return q(`SELECT f.marketDate AS date, f.rawCenter AS rawCenter, f.ensSd AS ensSd, o.value AS obs
+  return q(`SELECT f.marketDate AS date, f.rawCenter AS rawCenter, f.ensSd AS ensSd, f.leadDays AS leadDays, o.value AS obs
             FROM forecasts f JOIN obs o
               ON o.station=f.station AND o.kind=f.kind AND o.obsDate=f.marketDate
             WHERE f.station=? AND f.kind=? AND f.leadDays=?
             ORDER BY f.marketDate DESC LIMIT ${+limit}`, [station, kind, leadDays]);
+}
+
+// Every lead's pairs, tagged with their lead. The station offset is a representativeness
+// error (grid cell vs the actual gauge), so it does not depend on forecast lead and pooling
+// across leads is both valid and worth ~3x the samples. Measured over 7 stations: pooled
+// bias +1.26 at lead 1 vs +1.28 at lead 2, with the large offsets stable to within 0.3 C
+// (Changi 2.26/2.28, Haneda 4.19/4.48).
+function biasPairsAllLeads(station, kind, limit = 1200) {
+  return q(`SELECT f.marketDate AS date, f.rawCenter AS rawCenter, f.ensSd AS ensSd, f.leadDays AS leadDays, o.value AS obs
+            FROM forecasts f JOIN obs o
+              ON o.station=f.station AND o.kind=f.kind AND o.obsDate=f.marketDate
+            WHERE f.station=? AND f.kind=?
+            ORDER BY f.marketDate DESC LIMIT ${+limit}`, [station, kind]);
 }
 
 // Spread history — kept separate from the bias pairs because it survives days with no
@@ -273,7 +286,7 @@ function close() { if (persistTimer) clearInterval(persistTimer); persistToDisk(
 
 module.exports = {
   initDB, getSetting, setSetting, getAllSettings, effectiveParams,
-  logForecast, logObs, getObs, biasPairs, spreadRows,
+  logForecast, logObs, getObs, biasPairs, biasPairsAllLeads, spreadRows,
   placeBasket, getBasket, getLegs, getOpenBaskets, getRecentBaskets, hasOpenBasket,
   openExposure, settleBasket, getStats,
   saveBacktest, getLatestBacktest, persistToDisk, close, _q: q,
