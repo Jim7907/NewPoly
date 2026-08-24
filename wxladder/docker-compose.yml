@@ -1,0 +1,29 @@
+services:
+  wxladder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wxladder
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - DB_PATH=/app/data
+      # Blank CITIES = all 32 METAR-resolved stations. Narrow it to cut forecast API load.
+      - CITIES=
+      - KINDS=high,low
+      - SCAN_MS=120000
+      - SEED_ON_BOOT=true     # calibrate the per-station bias from the archives on first boot
+    volumes:
+      - wxladder_data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  wxladder_data:
+    driver: local
