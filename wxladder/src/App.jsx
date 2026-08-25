@@ -197,7 +197,12 @@ export default function App() {
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         {[["BALANCE", "$" + f(s.paperBalance), C.good],
-          ["HIT RATE", (s.hitRate ?? "--") + "%", (s.hitRate || 0) >= 70 ? C.good : C.bad],
+          // COVER and PROFIT are different questions on a probability-weighted ladder: the
+          // outcome can land on an outer rung, which holds the smallest allocation and can pay
+          // back less than the basket cost. Showing only cover next to a negative P&L looks
+          // like a bug, so both are shown.
+          ["COVER", (s.coverRate ?? s.hitRate ?? "--") + "%", (s.coverRate ?? s.hitRate ?? 0) >= 70 ? C.good : C.bad],
+          ["PROFITABLE", (s.profitRate ?? "--") + "%" + (s.coveredLosses ? ` (${s.coveredLosses} covered loss${s.coveredLosses > 1 ? "es" : ""})` : ""), (s.profitRate || 0) >= 50 ? C.good : C.bad],
           ["P&L", sgn(s.totalPnl) === "--" ? "--" : "$" + sgn(s.totalPnl), (s.totalPnl || 0) >= 0 ? C.good : C.bad],
           ["ROI", (s.roi ?? "--") + "%", (s.roi || 0) >= 0 ? C.good : C.bad],
           ["BASKETS", `${s.closedBaskets || 0}/${s.totalBaskets || 0}`, C.blue],

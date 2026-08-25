@@ -160,3 +160,32 @@ test("effectiveParams layers stored settings over the static config", () => {
   db.setSetting("sizing", "kelly");
   db.close();
 });
+
+
+test("a COVERED outcome can still lose money, and the stats say so", () => {
+  // Reproduces the Lucknow case seen live: centre 31.4, rungs 30/31/32, station read 30.
+  // The outcome landed on the OUTER rung, which holds the smallest allocation, so the basket
+  // covered and still lost. Kelly does this deliberately — the wing is insurance, not a
+  // winner — but reporting cover as if it were a win rate makes it look like a bug.
+  const b = plan({
+    eventId: "lucknow", city: "Lucknow", station: "VILK", center: 31.4, outlay: 29.99,
+    legs: [
+      // outer rung: small allocation, expensive => pays back less than the basket cost
+      { idx: 1, label: "30°C", deg: 30, type: "exact", marketId: "l30", tokenId: "x30", prob: 0.22, ask: 0.42, fillAsk: 0.42, qEff: 0.44, shares: 15.17, dollars: 6.67 },
+      { idx: 2, label: "31°C", deg: 31, type: "exact", marketId: "l31", tokenId: "x31", prob: 0.44, ask: 0.30, fillAsk: 0.30, qEff: 0.32, shares: 55.0, dollars: 17.60 },
+      { idx: 3, label: "32°C", deg: 32, type: "exact", marketId: "l32", tokenId: "x32", prob: 0.24, ask: 0.14, fillAsk: 0.14, qEff: 0.15, shares: 38.13, dollars: 5.72 },
+    ],
+  });
+  const id = db.placeBasket(b, "kelly");
+  const r = db.settleBasket(id, 30, "iem-asos");
+
+  assert.equal(r.winLabel, "30°C");
+  assert.equal(r.status, "won", "the outcome DID land inside the cluster");
+  assert.ok(r.pnl < 0, `covered but lost: pnl ${r.pnl}`);
+  assert.ok(Math.abs(r.pnl - (15.17 - 29.99)) < 0.01, "loss is basket cost minus the outer rung's payout");
+
+  const stats = db.getStats();
+  assert.ok(stats.coverRate > 0, "cover rate counts it as covered");
+  assert.ok(stats.coveredLosses >= 1, "and it is flagged as a covered loss");
+  assert.ok(stats.profitRate < stats.coverRate, "profit rate must be able to sit BELOW cover rate");
+});

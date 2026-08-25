@@ -256,6 +256,19 @@ function buildLadder(input, p = cfg) {
     out.kellyFrac = best.sized.kellyFrac;
     out.fillEv = best.sized.fillEv;
     out.fillCoverProb = best.sized.fillCoverProb;
+    // The weakest funded rung: what comes back if the outcome lands THERE. On a
+    // probability-weighted basket the outer rungs hold the smallest allocation, so an outer
+    // hit can pay less than the whole basket cost — a COVERED outcome that still loses money.
+    // Surfaced before entry rather than discovered at settlement.
+    const funded = out.legs.filter(l => l.shares > 0);
+    if (funded.length && out.outlay > 0) {
+      const worst = Math.min(...funded.map(l => l.shares));
+      const bestPay = Math.max(...funded.map(l => l.shares));
+      out.worstCoveredPayout = +worst.toFixed(2);
+      out.worstCoveredReturn = +(worst / out.outlay - 1).toFixed(4);
+      out.bestCoveredReturn = +(bestPay / out.outlay - 1).toFixed(4);
+      out.canLoseWhileCovered = worst < out.outlay;
+    }
   } else {
     out.legs = best.legs.map(l => ({ label: l.label, prob: +l.prob.toFixed(4), ask: l.ask, shares: 0, dollars: 0 }));
   }

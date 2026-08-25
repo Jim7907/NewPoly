@@ -261,8 +261,15 @@ function getStats() {
     wonBaskets: won.length,
     lostBaskets: closed.length - won.length,
     voidBaskets: all.filter(b => b.status === "void").length,
-    // "Hit rate" here means the outcome landed inside the cluster — the ladder's own claim.
-    hitRate: closed.length ? +(won.length / closed.length * 100).toFixed(1) : 0,
+    // Two DIFFERENT rates, because on a probability-weighted ladder they genuinely diverge:
+    // covering the outcome does not imply profiting from it. When the outcome lands on an
+    // outer rung, that rung holds the smallest allocation and can pay back less than the whole
+    // basket cost — a covered loss. Reporting only the cover rate next to a negative P&L reads
+    // like a bug, so both are published.
+    coverRate: closed.length ? +(won.length / closed.length * 100).toFixed(1) : 0,
+    profitRate: closed.length ? +(closed.filter(b => (b.pnl || 0) > 0).length / closed.length * 100).toFixed(1) : 0,
+    coveredLosses: closed.filter(b => b.status === "won" && (b.pnl || 0) <= 0).length,
+    hitRate: closed.length ? +(won.length / closed.length * 100).toFixed(1) : 0,  // back-compat alias for coverRate
     totalPnl: +totalPnl.toFixed(2),
     roi: staked > 0 ? +(totalPnl / staked * 100).toFixed(2) : 0,
     staked: +staked.toFixed(2),
