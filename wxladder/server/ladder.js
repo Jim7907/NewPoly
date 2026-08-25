@@ -279,9 +279,13 @@ function buildLadder(input, p = cfg) {
   if (regime === "wide" && p.SKIP_WHEN_WIDE) reasons.push("ensemble-wide");
   if (best.metrics.coverProb < p.MIN_COVER_PROB) reasons.push("cover<min");
   if (disagreement > p.MAX_TVD) reasons.push("model-vs-market-divergent");
-  const ev = out.fillEv != null ? out.fillEv : out.basketEv;
-  if (ev < p.MIN_BASKET_EV) reasons.push("ev<min");
-  if (ev > p.MAX_SANE_EV) reasons.push("ev-implausible");
+  // Admission reads the sizing-independent edge by default, so every sizing policy faces the
+  // same bar and the only thing separating them is allocation. The chosen allocation is then
+  // checked on its own terms: it must not destroy the edge it was admitted on.
+  const admitEv = p.EV_GATE_BASIS === "fill" && out.fillEv != null ? out.fillEv : out.basketEv;
+  if (admitEv < p.MIN_BASKET_EV) reasons.push("ev<min");
+  if (admitEv > p.MAX_SANE_EV) reasons.push("ev-implausible");
+  if (out.fillEv != null && out.fillEv <= (p.MIN_FILL_EV ?? 0)) reasons.push("fill-ev<=min");
   for (const l of best.legs) {
     if (l.spreadC != null && l.spreadC > p.MAX_LEG_SPREAD_C) { reasons.push(`spread-wide:${l.label}`); break; }
   }

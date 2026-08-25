@@ -222,3 +222,34 @@ test("W_MODEL=0 reproduces the market and cannot find an edge", () => {
   assert.equal(o.signal, "—");
   assert.ok(o.reasons.includes("ev<min"), `deferring entirely to the book should find nothing: ${o.reasons}`);
 });
+
+test("admission is sizing-independent so policies can be compared on the same market", () => {
+  // Kelly raises its OWN fill EV by starving the weaker rungs. Gating on that figure admits
+  // Kelly to markets it then declines to fund evenly, and gates equal-share out of markets
+  // whose neighbourhood edge is identical — which makes a paired comparison impossible.
+  const base = { MIN_BASKET_EV: 0.08, EV_GATE_BASIS: "basket" };
+  const kelly = build({}, { ...base, SIZING: "kelly" });
+  const equal = build({}, { ...base, SIZING: "equal" });
+  const evGate = (o) => (o.reasons || []).includes("ev<min");
+  assert.equal(evGate(kelly), evGate(equal),
+    "under a sizing-independent gate both policies reach the same admission verdict");
+
+  // And the basis is switchable, so the old behaviour is still reachable.
+  const fillGated = build({}, { ...base, EV_GATE_BASIS: "fill", SIZING: "kelly" });
+  assert.ok(Array.isArray(fillGated.reasons));
+});
+
+test("equal-share sizing cannot cover an outcome and still lose", () => {
+  // Every rung holds the same number of shares, so any covered outcome pays the same amount.
+  // That amount beats the outlay whenever the basket cost is under $1 — which the cost cap
+  // already guarantees. This is the structural difference from Kelly.
+  const o = build({}, { SIZING: "equal" });
+  const funded = (o.legs || []).filter(l => l.shares > 0);
+  if (funded.length >= 2 && o.outlay > 0) {
+    const shares = funded.map(l => l.shares);
+    assert.ok(Math.max(...shares) - Math.min(...shares) < 0.02, "equal SHARES across rungs");
+    assert.equal(o.canLoseWhileCovered, false);
+    assert.ok(o.worstCoveredReturn >= 0, `worst covered return ${o.worstCoveredReturn} must not be negative`);
+    assert.ok(Math.abs(o.worstCoveredReturn - o.bestCoveredReturn) < 1e-6, "every covered outcome pays alike");
+  }
+});

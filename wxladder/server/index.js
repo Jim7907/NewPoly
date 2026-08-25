@@ -24,6 +24,19 @@ app.use(express.json());
 
 const safe = (fn, d) => { try { return fn(); } catch { return d; } };
 
+// Per-policy view of the same ladder. Carries the signal and the refusal reasons, not just the
+// sizes, because the interesting failure is a policy being GATED OUT of a market the other
+// took — which is invisible if only placed baskets are recorded.
+const sizingCompareOf = (byMode, placed = {}) => Object.fromEntries(cfg.SIZING_MODES.map(m => {
+  const b = byMode[m];
+  return [m, b ? {
+    signal: b.signal, reasons: b.reasons || [], outlay: b.outlay ?? 0, width: b.width ?? null,
+    basketEv: b.basketEv ?? null, fillEv: b.fillEv ?? null,
+    worstCoveredReturn: b.worstCoveredReturn ?? null, bestCoveredReturn: b.bestCoveredReturn ?? null,
+    canLoseWhileCovered: b.canLoseWhileCovered ?? null, placed: placed[m] || null,
+  } : null];
+}));
+
 let liveCache = { ladders: [], ts: null, scanning: false, lastError: null };
 let scanning = false;
 let seeded = false;
@@ -109,16 +122,12 @@ async function scanOnce() {
     }
 
     for (const p of plans) {
-      const placed = engine.tryEnter(p.byMode, params);
-      if (placed) {
+      const placed = engine.tryEnter(p.byMode, params) || {};
+      p.plan.sizingCompare = sizingCompareOf(p.byMode, placed);
+      if (Object.keys(placed).length) {
         p.plan.placed = placed;
         // Attach each policy's own outlay so the dashboard can show them side by side.
-        p.plan.sizingCompare = Object.fromEntries(cfg.SIZING_MODES.map(m => [m, {
-          outlay: p.byMode[m]?.outlay ?? 0, width: p.byMode[m]?.width ?? null,
-          worstCoveredReturn: p.byMode[m]?.worstCoveredReturn ?? null,
-          bestCoveredReturn: p.byMode[m]?.bestCoveredReturn ?? null,
-          placed: placed[m] || null,
-        }]));
+        p.plan.sizingCompare = sizingCompareOf(p.byMode, placed);
         const desc = cfg.SIZING_MODES.map(m => `${m}=$${p.byMode[m]?.outlay ?? 0}`).join(" ");
         console.log(`[trade] ${p.plan.city}/${p.plan.kind} ${p.plan.date} -> ${desc}`);
       }

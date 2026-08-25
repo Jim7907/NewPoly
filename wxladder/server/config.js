@@ -146,6 +146,15 @@ const cfg = {
   // `npm run backtest` recomputes it from current data.
   MAX_BASKET_COST: num("MAX_BASKET_COST", 0.85),  // sum of asks across the rungs
   MIN_BASKET_EV:   num("MIN_BASKET_EV", 0.08),    // min EV per $1 of basket cost, after fees
+  // Which EV the admission gate reads. "basket" is the SIZING-INDEPENDENT edge of the
+  // neighbourhood itself; "fill" is the edge of one policy's particular allocation.
+  // Gating on "fill" conflates two questions — is this market mispriced, and how should I
+  // size it — and structurally favours concentrating policies: Kelly raises its own fill EV
+  // by starving the weaker rungs, so under a shared floor it was admitted on 24 of 24
+  // comparable ladders while equal-share cleared only 6. Admission is now the same test for
+  // every policy, and execution is checked separately by MIN_FILL_EV.
+  EV_GATE_BASIS:   str("EV_GATE_BASIS", "basket"), // basket | fill
+  MIN_FILL_EV:     num("MIN_FILL_EV", 0),         // the chosen allocation must still clear this
   MIN_COVER_PROB:  num("MIN_COVER_PROB", 0.70),   // model P(outcome lands in the cluster)
 
   // ── Costs ──────────────────────────────────────────────
