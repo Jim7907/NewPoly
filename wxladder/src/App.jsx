@@ -215,6 +215,29 @@ export default function App() {
         ))}
       </div>
 
+      {s.byMode && Object.keys(s.byMode).length > 1 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          {Object.entries(s.byMode).map(([mode, m]) => (
+            <div key={mode} style={{ flex: 1, minWidth: 210, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 12px" }}>
+              <div style={{ fontSize: 8, color: C.dim, letterSpacing: 1 }}>SIZING · {mode.toUpperCase()}</div>
+              <div style={{ display: "flex", gap: 12, alignItems: "baseline", marginTop: 3 }}>
+                <span style={{ fontSize: 15, fontWeight: 800, fontFamily: "monospace", color: (m.totalPnl || 0) >= 0 ? C.good : C.bad }}>
+                  {(m.totalPnl || 0) >= 0 ? "+" : ""}${(m.totalPnl ?? 0).toFixed(2)}
+                </span>
+                <span style={{ fontSize: 10, color: C.dim, fontFamily: "monospace" }}>
+                  {m.roi != null ? `${m.roi > 0 ? "+" : ""}${m.roi}% ROI` : "--"} · bal ${m.paperBalance}
+                </span>
+              </div>
+              <div style={{ fontSize: 9, color: C.dim, fontFamily: "monospace", marginTop: 2 }}>
+                cover {m.coverRate ?? "--"}% · profitable {m.profitRate ?? "--"}%
+                {m.coveredLosses ? ` · ${m.coveredLosses} covered loss${m.coveredLosses > 1 ? "es" : ""}` : ""}
+                {" · "}{m.closedBaskets ?? 0} settled, {m.openBaskets ?? 0} open
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
         <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
           {[["live", "LIVE"], ["baskets", "BASKETS"], ["stations", "STATIONS"], ["calib", "CALIBRATION"], ["backtest", "BACKTEST"], ["log", "LOG"], ["config", "CONFIG"]].map(([id, lb]) => (

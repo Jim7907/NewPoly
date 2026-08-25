@@ -15,13 +15,22 @@ const DAY_MS = 86400000;
 const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY_MS);
 
 // Place a paper basket from an actionable plan. Returns the basket id or null.
-function tryEnter(plan, params = cfg) {
+// Place one basket per sizing policy. `plans` maps sizing mode -> the plan built under that
+// mode from the SAME forecast and the same books, so the two books stay paired trade for
+// trade and any P&L difference between them is attributable to the sizing rule alone.
+function tryEnter(plans, params = cfg) {
   if (db.getSetting("paper_enabled") !== "true" || db.getSetting("scan_active") !== "true") return null;
-  if (!plan || plan.signal === "—" || !(plan.outlay > 0)) return null;
-  if (db.hasOpenBasket(plan.eventId)) return null;
-  const funded = (plan.legs || []).filter(l => l.shares > 0);
-  if (funded.length < params.LADDER_MIN_W) return null;
-  return db.placeBasket(plan, params.SIZING);
+  const byMode = (plans && plans.signal !== undefined) ? { [params.SIZING]: plans } : (plans || {});
+  const placed = {};
+  for (const [sizing, plan] of Object.entries(byMode)) {
+    if (!plan || plan.signal === "—" || !(plan.outlay > 0)) continue;
+    if (db.hasOpenBasket(plan.eventId, sizing)) continue;
+    const funded = (plan.legs || []).filter(l => l.shares > 0);
+    if (funded.length < params.LADDER_MIN_W) continue;
+    const id = db.placeBasket(plan, sizing);
+    if (id) placed[sizing] = id;
+  }
+  return Object.keys(placed).length ? placed : null;
 }
 
 // Settle every open basket whose local day has finished at its own station.

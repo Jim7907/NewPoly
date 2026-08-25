@@ -59,6 +59,7 @@ async function initDB() {
 
   const defaults = {
     paper_balance: String(cfg.PAPER_BALANCE),
+    ...Object.fromEntries(cfg.SIZING_MODES.map(m => [`paper_balance_${m}`, String(cfg.PAPER_BALANCE)])),
     paper_enabled: "true",
     scan_active: "true",
     sizing: cfg.SIZING,
@@ -166,11 +167,19 @@ function spreadRows(station, kind, leadDays, limit = 400) {
 }
 
 // ── Baskets ──
-function hasOpenBasket(eventId) {
-  return (db.exec("SELECT 1 FROM baskets WHERE eventId=? AND status='open' LIMIT 1", [eventId])[0]?.values.length || 0) > 0;
+// Scoped to the sizing policy, so both books may hold the same market at once — that pairing
+// is the entire point of running them side by side.
+function hasOpenBasket(eventId, sizing) {
+  const sql = sizing
+    ? "SELECT 1 FROM baskets WHERE eventId=? AND sizing=? AND status='open' LIMIT 1"
+    : "SELECT 1 FROM baskets WHERE eventId=? AND status='open' LIMIT 1";
+  const args = sizing ? [eventId, sizing] : [eventId];
+  return (db.exec(sql, args)[0]?.values.length || 0) > 0;
 }
-function openExposure() {
-  const r = db.exec("SELECT SUM(outlay) FROM baskets WHERE status='open'");
+function openExposure(sizing) {
+  const r = sizing
+    ? db.exec("SELECT SUM(outlay) FROM baskets WHERE status='open' AND sizing=?", [sizing])
+    : db.exec("SELECT SUM(outlay) FROM baskets WHERE status='open'");
   return Number(r[0]?.values[0]?.[0] || 0);
 }
 
@@ -197,7 +206,7 @@ function placeBasket(plan, sizing) {
        l.prob, l.pModel ?? null, l.pMarket ?? null, l.ask, l.fillAsk ?? l.ask, l.qEff,
        l.feePerShare ?? null, l.shares, l.dollars]);
   }
-  setSetting("paper_balance", (parseFloat(getSetting("paper_balance") || "0") - outlay).toFixed(4));
+  setBalance(sizing || cfg.SIZING, getBalance(sizing || cfg.SIZING) - outlay);
   persistToDisk();
   return id;
 }
@@ -218,7 +227,7 @@ function settleBasket(basketId, obsValue, obsSource) {
 
   if (obsValue == null) {
     db.run("UPDATE baskets SET status='void', resolvedAt=? WHERE id=?", [new Date().toISOString(), basketId]);
-    setSetting("paper_balance", (parseFloat(getSetting("paper_balance")) + b.outlay).toFixed(4));
+    setBalance(b.sizing, getBalance(b.sizing) + b.outlay);
     persistToDisk();
     return { basketId, status: "void", refund: b.outlay };
   }
@@ -242,19 +251,37 @@ function settleBasket(basketId, obsValue, obsSource) {
   const pnl = +(payout - b.outlay).toFixed(4);
   db.run("UPDATE baskets SET status=?, resolvedAt=?, obsValue=?, obsSource=?, winLabel=?, payout=?, pnl=? WHERE id=?",
     [payout > 0 ? "won" : "lost", new Date().toISOString(), obsValue, obsSource || null, winLabel, payout, pnl, basketId]);
-  if (payout > 0) setSetting("paper_balance", (parseFloat(getSetting("paper_balance")) + payout).toFixed(4));
+  if (payout > 0) setBalance(b.sizing, getBalance(b.sizing) + payout);
   persistToDisk();
   return { basketId, status: payout > 0 ? "won" : "lost", obsValue, winLabel, payout, pnl };
 }
 
-function getStats() {
-  const all = q("SELECT * FROM baskets");
+// Each sizing policy is its own paper book: separate bankroll, separate exposure, separate
+// P&L. Sharing one balance would let whichever policy traded first starve the other and make
+// the comparison meaningless.
+const balanceKey = (sizing) => `paper_balance_${sizing || cfg.SIZING}`;
+function getBalance(sizing) {
+  const v = getSetting(balanceKey(sizing));
+  return v == null ? cfg.PAPER_BALANCE : parseFloat(v);
+}
+const setBalance = (sizing, v) => setSetting(balanceKey(sizing), Number(v).toFixed(4));
+
+function getStats(sizing) {
+  if (sizing) return statsFor(sizing);
+  const byMode = Object.fromEntries(cfg.SIZING_MODES.map(m => [m, statsFor(m)]));
+  const primary = byMode[cfg.SIZING] || statsFor(cfg.SIZING);
+  return { ...primary, byMode };
+}
+
+function statsFor(sizing) {
+  const all = q("SELECT * FROM baskets WHERE sizing=?", [sizing]);
   const closed = all.filter(b => b.status === "won" || b.status === "lost");
   const won = closed.filter(b => b.status === "won");
   const totalPnl = closed.reduce((s, b) => s + (b.pnl || 0), 0);
   const staked = closed.reduce((s, b) => s + (b.outlay || 0), 0);
   return {
-    paperBalance: +parseFloat(getSetting("paper_balance") || "0").toFixed(2),
+    sizing,
+    paperBalance: +getBalance(sizing).toFixed(2),
     totalBaskets: all.length,
     openBaskets: all.filter(b => b.status === "open").length,
     closedBaskets: closed.length,
@@ -273,7 +300,7 @@ function getStats() {
     totalPnl: +totalPnl.toFixed(2),
     roi: staked > 0 ? +(totalPnl / staked * 100).toFixed(2) : 0,
     staked: +staked.toFixed(2),
-    openExposure: +openExposure().toFixed(2),
+    openExposure: +openExposure(sizing).toFixed(2),
   };
 }
 
@@ -295,6 +322,7 @@ module.exports = {
   initDB, getSetting, setSetting, getAllSettings, effectiveParams,
   logForecast, logObs, getObs, biasPairs, biasPairsAllLeads, spreadRows,
   placeBasket, getBasket, getLegs, getOpenBaskets, getRecentBaskets, hasOpenBasket,
+  getBalance, setBalance, balanceKey,
   openExposure, settleBasket, getStats,
   saveBacktest, getLatestBacktest, persistToDisk, close, _q: q,
 };

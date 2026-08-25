@@ -8,6 +8,7 @@ const fs = require("fs");
 process.env.DB_PATH = fs.mkdtempSync(path.join(os.tmpdir(), "wxl-"));
 process.env.PAPER_BALANCE = "1000";
 const db = require("../server/db");
+const cfg = require("../server/config");
 const engine = require("../server/engine");
 
 // A funded 3-rung plan: 100 shares of a 0.30 rung, 100 of 0.20, 100 of 0.10.
@@ -27,11 +28,11 @@ const plan = (over = {}) => ({
 
 test("basket lifecycle: place, win on the centre rung, and settle the balance", async () => {
   await db.initDB();
-  assert.equal(parseFloat(db.getSetting("paper_balance")), 1000);
+  assert.equal(db.getBalance(cfg.SIZING), 1000);
 
   const id = db.placeBasket(plan(), "kelly");
   assert.ok(id);
-  assert.equal(parseFloat(db.getSetting("paper_balance")), 940, "the whole outlay is debited up front");
+  assert.equal(db.getBalance(cfg.SIZING), 940, "the whole outlay is debited up front");
   assert.equal(db.getLegs(id).length, 3);
   assert.ok(db.hasOpenBasket("evt1"));
   assert.equal(db.openExposure(), 60);
@@ -42,7 +43,7 @@ test("basket lifecycle: place, win on the centre rung, and settle the balance", 
   assert.equal(r.winLabel, "30°C");
   assert.equal(r.payout, 100);
   assert.equal(r.pnl, 40);
-  assert.equal(parseFloat(db.getSetting("paper_balance")), 1040);
+  assert.equal(db.getBalance(cfg.SIZING), 1040);
   const legs = db.getLegs(id);
   assert.equal(legs.filter(l => l.won === 1).length, 1, "exactly one rung can win");
 });
@@ -56,26 +57,26 @@ test("an open tail rung wins for anything at or beyond its degree", async () => 
 });
 
 test("a miss outside the cluster loses the whole outlay and nothing more", async () => {
-  const before = parseFloat(db.getSetting("paper_balance"));
+  const before = db.getBalance(cfg.SIZING);
   const id = db.placeBasket(plan({ eventId: "evt3" }), "kelly");
   const r = db.settleBasket(id, 27, "iem-asos");
   assert.equal(r.status, "lost");
   assert.equal(r.payout, 0);
   assert.equal(r.pnl, -60);
-  assert.equal(parseFloat(db.getSetting("paper_balance")), before - 60);
+  assert.equal(db.getBalance(cfg.SIZING), before - 60);
   assert.ok(db.getLegs(id).every(l => l.won === 0));
 });
 
 test("a station that never reports voids and refunds in full", async () => {
-  const before = parseFloat(db.getSetting("paper_balance"));
+  const before = db.getBalance(cfg.SIZING);
   const id = db.placeBasket(plan({ eventId: "evt4" }), "kelly");
   const r = db.settleBasket(id, null, null);
   assert.equal(r.status, "void");
-  assert.equal(parseFloat(db.getSetting("paper_balance")), before, "void is economically a no-op");
+  assert.equal(db.getBalance(cfg.SIZING), before, "void is economically a no-op");
 });
 
 test("stats aggregate hit rate and ROI over settled baskets", () => {
-  const s = db.getStats();
+  const s = db.getStats(cfg.SIZING);
   assert.equal(s.wonBaskets, 2);
   assert.equal(s.lostBaskets, 1);
   assert.equal(s.voidBaskets, 1);
@@ -184,8 +185,44 @@ test("a COVERED outcome can still lose money, and the stats say so", () => {
   assert.ok(r.pnl < 0, `covered but lost: pnl ${r.pnl}`);
   assert.ok(Math.abs(r.pnl - (15.17 - 29.99)) < 0.01, "loss is basket cost minus the outer rung's payout");
 
-  const stats = db.getStats();
+  const stats = db.getStats(cfg.SIZING);
   assert.ok(stats.coverRate > 0, "cover rate counts it as covered");
   assert.ok(stats.coveredLosses >= 1, "and it is flagged as a covered loss");
   assert.ok(stats.profitRate < stats.coverRate, "profit rate must be able to sit BELOW cover rate");
+});
+
+test("each sizing policy keeps its own book, and both may hold the same market", () => {
+  // The comparison is only meaningful if the policies do not compete for one bankroll and
+  // are not blocked by each other's open positions.
+  const kellyBefore = db.getBalance("kelly");
+  const equalBefore = db.getBalance("equal");
+
+  const p = plan({ eventId: "paired-evt", city: "Paris", station: "LFPB" });
+  const idK = db.placeBasket(p, "kelly");
+  // Same market, different policy: must NOT be blocked, and must debit the OTHER book.
+  assert.equal(db.hasOpenBasket("paired-evt", "kelly"), true);
+  assert.equal(db.hasOpenBasket("paired-evt", "equal"), false, "the equal book is still free to take it");
+  const idE = db.placeBasket({ ...p, legs: p.legs.map(l => ({ ...l, shares: 50, dollars: l.qEff * 50 })) }, "equal");
+  assert.ok(idK && idE && idK !== idE);
+
+  assert.ok(db.getBalance("kelly") < kellyBefore, "kelly book debited");
+  assert.ok(db.getBalance("equal") < equalBefore, "equal book debited");
+  assert.equal(db.getBalance("kelly"), +(kellyBefore - 60).toFixed(4), "kelly debit is its own outlay only");
+
+  // Settling one book must not move the other.
+  const equalMid = db.getBalance("equal");
+  db.settleBasket(idK, 30, "iem-asos");
+  assert.equal(db.getBalance("equal"), equalMid, "settling kelly leaves the equal book untouched");
+
+  // Exposure and stats are reported per policy. (Earlier tests in this file leave their own
+  // kelly baskets open, so compare against the combined figure rather than assuming zero.)
+  assert.ok(db.openExposure("equal") > 0, "equal book carries its open basket");
+  assert.equal(
+    +(db.openExposure("kelly") + db.openExposure("equal")).toFixed(4),
+    +db.openExposure().toFixed(4),
+    "per-policy exposure partitions the total"
+  );
+  const both = db.getStats();
+  assert.ok(both.byMode.kelly && both.byMode.equal, "stats expose every policy");
+  assert.equal(both.byMode.kelly.sizing, "kelly");
 });

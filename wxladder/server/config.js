@@ -162,7 +162,14 @@ const cfg = {
   MIN_ORDER_SHARES: num("MIN_ORDER_SHARES", 5),   // Polymarket orderMinSize on these markets
 
   // ── Sizing ─────────────────────────────────────────────
-  SIZING:   str("SIZING", "kelly"),        // kelly | prob | equal
+  SIZING:   str("SIZING", "kelly"),        // primary mode, used where a single answer is needed
+  // Sizing policies to run SIDE BY SIDE. Each is its own paper book with its own bankroll, and
+  // every qualifying ladder is built under each policy on the SAME scan, the same forecast and
+  // the same order books — so the only variable between them is the sizing rule. Kelly and
+  // equal-share differ in exactly the way that matters here: Kelly maximises log-growth but
+  // lets an outer-rung hit lose money, while equal shares pays the same for any covered
+  // outcome at a lower EV when the centre is right.
+  SIZING_MODES: str("SIZING_MODES", "kelly,equal").split(",").map(s => s.trim()).filter(Boolean),
   PAPER_BALANCE: num("PAPER_BALANCE", 1000),
   KELLY_K:  num("KELLY_K", 0.25),
   BUDGET_FRAC: num("BUDGET_FRAC", 0.02),   // max fraction of bankroll per market

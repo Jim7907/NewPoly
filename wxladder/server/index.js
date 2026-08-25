@@ -52,8 +52,11 @@ async function scanOnce() {
     });
     const forecasts = Object.fromEntries(fetched.filter(r => r && r[1]));
 
-    const bankroll = parseFloat(db.getSetting("paper_balance") || "0");
-    const openExposure = db.openExposure();
+    // One bankroll and one exposure figure PER sizing policy — each is its own book.
+    const bankrollOf = Object.fromEntries(cfg.SIZING_MODES.map(m => [m, db.getBalance(m)]));
+    const exposureOf = Object.fromEntries(cfg.SIZING_MODES.map(m => [m, db.openExposure(m)]));
+    const bankroll = bankrollOf[cfg.SIZING];
+    const openExposure = exposureOf[cfg.SIZING];
 
     // Pass 1 — build on Gamma top-of-book to find which markets are worth a real book pull.
     const plans = [];
@@ -73,8 +76,16 @@ async function scanOnce() {
         targetLead: lad.leadDays, sigmaGrowth: params.LEAD_SIGMA_GROWTH, minLeadPairs: params.MIN_LEAD_PAIRS,
       });
       const spreadHist = bias.spreadTracks(db.spreadRows(lad.station.icao, lad.kind, lad.leadDays), { asOf: lad.date });
-      plans.push({ lad, forecast, biasFit, spreadHist,
-        plan: ladderMod.buildLadder({ lad, forecast, biasFit, spreadHist, books: {}, bankroll, openExposure }, params) });
+      // Build the SAME ladder under each sizing policy. Identical forecast, identical books,
+      // identical instant — the sizing rule is the only thing that differs, which is what
+      // makes the two books comparable trade for trade.
+      const byMode = {};
+      for (const m of cfg.SIZING_MODES) {
+        byMode[m] = ladderMod.buildLadder(
+          { lad, forecast, biasFit, spreadHist, books: {}, bankroll: bankrollOf[m], openExposure: exposureOf[m] },
+          { ...params, SIZING: m });
+      }
+      plans.push({ lad, forecast, biasFit, spreadHist, byMode, plan: byMode[cfg.SIZING] });
     }
 
     // Pass 2 — only markets that look live get a real order-book pull, then re-decide on it.
@@ -86,16 +97,31 @@ async function scanOnce() {
       const tokens = worth.flatMap(p => p.lad.buckets.map(b => b.yesToken));
       const books = await poly.getBooks(tokens);
       for (const p of worth) {
-        p.plan = ladderMod.buildLadder(
-          { lad: p.lad, forecast: p.forecast, biasFit: p.biasFit, spreadHist: p.spreadHist, books, bankroll, openExposure },
-          params);
-        p.plan.bookChecked = true;
+        for (const m of cfg.SIZING_MODES) {
+          p.byMode[m] = ladderMod.buildLadder(
+            { lad: p.lad, forecast: p.forecast, biasFit: p.biasFit, spreadHist: p.spreadHist, books,
+              bankroll: bankrollOf[m], openExposure: exposureOf[m] },
+            { ...params, SIZING: m });
+          p.byMode[m].bookChecked = true;
+        }
+        p.plan = p.byMode[cfg.SIZING];
       }
     }
 
     for (const p of plans) {
-      const id = engine.tryEnter(p.plan, params);
-      if (id) { p.plan.placed = id; console.log(`[trade] ${p.plan.city}/${p.plan.kind} ${p.plan.date} -> ${id} $${p.plan.outlay}`); }
+      const placed = engine.tryEnter(p.byMode, params);
+      if (placed) {
+        p.plan.placed = placed;
+        // Attach each policy's own outlay so the dashboard can show them side by side.
+        p.plan.sizingCompare = Object.fromEntries(cfg.SIZING_MODES.map(m => [m, {
+          outlay: p.byMode[m]?.outlay ?? 0, width: p.byMode[m]?.width ?? null,
+          worstCoveredReturn: p.byMode[m]?.worstCoveredReturn ?? null,
+          bestCoveredReturn: p.byMode[m]?.bestCoveredReturn ?? null,
+          placed: placed[m] || null,
+        }]));
+        const desc = cfg.SIZING_MODES.map(m => `${m}=$${p.byMode[m]?.outlay ?? 0}`).join(" ");
+        console.log(`[trade] ${p.plan.city}/${p.plan.kind} ${p.plan.date} -> ${desc}`);
+      }
     }
 
     const ladders = plans.map(p => p.plan);
@@ -144,7 +170,43 @@ app.get("/api/ladder/:eventId", (req, res) => {
 });
 
 app.get("/api/baskets", (req, res) => res.json({ baskets: db.getRecentBaskets(parseInt(req.query.limit) || 200) }));
-app.get("/api/stats", (req, res) => res.json(db.getStats()));
+app.get("/api/stats", (req, res) => res.json(db.getStats(req.query.sizing || undefined)));
+
+// Head-to-head between the sizing policies. Both books see the same ladders on the same
+// scans, so `paired` counts only markets where BOTH placed — the apples-to-apples subset.
+app.get("/api/compare", (req, res) => {
+  const modes = cfg.SIZING_MODES;
+  const all = db._q("SELECT eventId,sizing,status,outlay,payout,pnl,coverProb,winLabel FROM baskets");
+  const settled = all.filter(b => b.status === "won" || b.status === "lost");
+  const byEvent = {};
+  for (const b of settled) (byEvent[b.eventId] ||= {})[b.sizing] = b;
+  const pairedEvents = Object.values(byEvent).filter(e => modes.every(m => e[m]));
+
+  const summarise = (rows) => {
+    const staked = rows.reduce((s, b) => s + (b.outlay || 0), 0);
+    const pnl = rows.reduce((s, b) => s + (b.pnl || 0), 0);
+    const covered = rows.filter(b => b.status === "won").length;
+    return {
+      n: rows.length, staked: +staked.toFixed(2), pnl: +pnl.toFixed(2),
+      roi: staked > 0 ? +(pnl / staked * 100).toFixed(2) : null,
+      coverRate: rows.length ? +(covered / rows.length * 100).toFixed(1) : null,
+      profitRate: rows.length ? +(rows.filter(b => (b.pnl || 0) > 0).length / rows.length * 100).toFixed(1) : null,
+      coveredLosses: rows.filter(b => b.status === "won" && (b.pnl || 0) <= 0).length,
+    };
+  };
+
+  res.json({
+    modes,
+    balances: Object.fromEntries(modes.map(m => [m, +db.getBalance(m).toFixed(2)])),
+    all: Object.fromEntries(modes.map(m => [m, summarise(settled.filter(b => b.sizing === m))])),
+    paired: Object.fromEntries(modes.map(m => [m, summarise(pairedEvents.map(e => e[m]))])),
+    pairedMarkets: pairedEvents.length,
+    note: "`paired` is the like-for-like comparison: only markets where every policy placed a " +
+          "basket, from the same forecast and the same books. `all` includes markets one policy " +
+          "took and another declined, which is itself a difference between them.",
+    ts: new Date().toISOString(),
+  });
+});
 
 // Station table with each station's current bias fit — the "am I calibrated here?" view.
 app.get("/api/stations", (req, res) => {
