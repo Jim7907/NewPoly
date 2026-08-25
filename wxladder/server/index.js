@@ -128,7 +128,14 @@ async function scanOnce() {
         p.plan.placed = placed;
         // Attach each policy's own outlay so the dashboard can show them side by side.
         p.plan.sizingCompare = sizingCompareOf(p.byMode, placed);
-        const desc = cfg.SIZING_MODES.map(m => `${m}=$${p.byMode[m]?.outlay ?? 0}`).join(" ");
+        // Report what each policy actually DID, not what it would have spent. Printing the
+        // planned outlay for a policy that never placed reads as a paired trade when it is not.
+        const desc = cfg.SIZING_MODES.map(m => {
+          const b = p.byMode[m];
+          if (placed[m]) return `${m}=$${b.outlay}`;
+          const why = (b?.reasons || []).join(",") || "no-signal";
+          return `${m}=skipped(${why})`;
+        }).join(" ");
         console.log(`[trade] ${p.plan.city}/${p.plan.kind} ${p.plan.date} -> ${desc}`);
       }
     }
