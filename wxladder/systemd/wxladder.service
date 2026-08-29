@@ -1,0 +1,26 @@
+# Non-Docker deployment. Install:
+#   sudo cp wxladder/systemd/wxladder.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now wxladder
+# Adjust User/WorkingDirectory to match where you cloned the repo.
+[Unit]
+Description=Polymarket Temperature Ladder Bot (paper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/NewPoly/wxladder
+Environment=NODE_ENV=production
+Environment=PORT=3003
+Environment=DB_PATH=/root/NewPoly/wxladder/data
+Environment=KINDS=high,low
+Environment=SEED_ON_BOOT=true
+# Build the frontend once, then run the server.
+ExecStartPre=/usr/bin/env bash -lc 'cd /root/NewPoly/wxladder && npm install && npm run build'
+ExecStart=/usr/bin/env node server/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
