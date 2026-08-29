@@ -12,7 +12,10 @@ const build = (opts = {}, params = {}) => L.buildLadder({
   books: opts.books || {},
   bankroll: opts.bankroll === undefined ? 1000 : opts.bankroll,
   openExposure: opts.openExposure || 0,
-}, { ...cfg, ...params });
+  // Pin the sizing policy these assertions were authored against. The product DEFAULT is
+  // equal-share; these tests exercise ladder mechanics under a named policy, so they must not
+  // silently change meaning when that default moves.
+}, { ...cfg, SIZING: "kelly", ...params });
 
 test("windowsAround enumerates contiguous windows containing the centre, clipped to the ends", () => {
   assert.deepEqual(L.windowsAround(5, 11, 3), [[3, 4, 5], [4, 5, 6], [5, 6, 7]]);
@@ -252,4 +255,35 @@ test("equal-share sizing cannot cover an outcome and still lose", () => {
     assert.ok(o.worstCoveredReturn >= 0, `worst covered return ${o.worstCoveredReturn} must not be negative`);
     assert.ok(Math.abs(o.worstCoveredReturn - o.bestCoveredReturn) < 1e-6, "every covered outcome pays alike");
   }
+});
+
+test("the regime guard shrinks the bias and widens sigma on an out-of-window day", () => {
+  // Reproduces the Munich bust: the day's raw forecast sat ~2 sd below the window the bias was
+  // fit on, and the +1.82 C correction turned a -3.43 C raw error into -5.24 C. Applying a
+  // fitted offset under an airmass it was never observed in is the failure being guarded.
+  const fit = { ready: true, n: 30, bias: 1.8, rmse: 0.8, sd: 0.8, weightedN: 30, rawMean: 27.0, rawSd: 4.6 };
+  const params = { SIZING: "kelly", REGIME_Z_LO: 1.5, REGIME_Z_HI: 3.0, REGIME_SIGMA_INFLATE: 0.5 };
+
+  const inRegime = build({ forecast: forecast(27.0), biasFit: fit }, params);   // z = 0
+  const outRegime = build({ forecast: forecast(17.5), biasFit: fit }, params);  // z ~ -2.07
+
+  assert.equal(inRegime.regimeWeight, 1, "a typical day keeps the full correction");
+  assert.equal(inRegime.inRegime, true);
+  assert.ok(outRegime.regimeWeight < 1 && outRegime.regimeWeight > 0, `weight ${outRegime.regimeWeight}`);
+  assert.equal(outRegime.inRegime, false);
+  assert.ok(Math.abs(outRegime.regimeZ) > 2, `z ${outRegime.regimeZ}`);
+
+  // Correction shrunk toward zero...
+  assert.ok(Math.abs(outRegime.bias) < Math.abs(inRegime.bias), "bias shrunk out of regime");
+  // ...and the centre pulled back toward the raw forecast rather than pushed further from it.
+  assert.ok((outRegime.center - 17.5) < (inRegime.center - 27.0) + 1e-9);
+  // ...and sigma widened, so the ladder cannot stay narrow on a day it does not understand.
+  assert.ok(outRegime.sigma > inRegime.sigma, `sigma ${outRegime.sigma} vs ${inRegime.sigma}`);
+});
+
+test("the regime guard stays off when the fit cannot describe a spread", () => {
+  const noSpread = { ready: true, n: 3, bias: 1.5, rmse: 0.9, sd: 0.9, weightedN: 3, rawMean: 25, rawSd: null };
+  const o = build({ biasFit: noSpread }, { SIZING: "kelly" });
+  assert.equal(o.regimeWeight, undefined, "no spread => no guard, and no divide-by-zero");
+  assert.ok(Math.abs(o.bias - 1.5) < 1e-9, "the correction is applied unchanged");
 });

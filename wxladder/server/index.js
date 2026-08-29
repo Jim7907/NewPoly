@@ -87,6 +87,7 @@ async function scanOnce() {
         asOf: lad.date, windowDays: lad.station.biasWindowDays ?? params.BIAS_WINDOW_DAYS,
         halfLifeDays: params.BIAS_HALFLIFE_DAYS, clampTo: params.BIAS_CLAMP,
         targetLead: lad.leadDays, sigmaGrowth: params.LEAD_SIGMA_GROWTH, minLeadPairs: params.MIN_LEAD_PAIRS,
+        seededInflate: params.SEEDED_SIGMA_INFLATE,
       });
       const spreadHist = bias.spreadTracks(db.spreadRows(lad.station.icao, lad.kind, lad.leadDays), { asOf: lad.date });
       // Build the SAME ladder under each sizing policy. Identical forecast, identical books,

@@ -106,6 +106,22 @@ const cfg = {
   SPREAD_GAMMA: num("SPREAD_GAMMA", 0.5),  // how much today's ensemble spread moves sigma (0=climo, 1=full)
   SD_FLOOR:  num("SD_FLOOR", 0.6),         // deg C — representativeness floor, sigma never below this
   SD_FALLBACK: num("SD_FALLBACK", 1.6),    // deg C — predictive sigma before any error history exists
+  // Seeded bias pairs come from the historical-forecast archive, which stores a SHORT-LEAD
+  // (near-analysis) forecast. Its errors are far tighter than the D+1 forecast actually
+  // traded on: measured true-D+1 sd / archived sd = 1.90, 2.31, 2.53 at EDDM, LFPB and EGLC.
+  // Anchoring sigma on archived residuals therefore makes the model roughly 2.3x too
+  // confident. Sigma is inflated in proportion to how much of the fit is seeded rather than
+  // live-observed, and the inflation decays to 1 as real live pairs accumulate.
+  SEEDED_SIGMA_INFLATE: num("SEEDED_SIGMA_INFLATE", 2.3),
+
+  // Regime guard. A rolling bias assumes the station-vs-grid offset is stable, which breaks
+  // when the airmass changes. On the Munich bust the day's raw forecast sat 2.05 sd below the
+  // window the bias was fit on, and that day's error was 2.37 sd from the training mean error
+  // — the offset simply did not transfer. Outside REGIME_Z_LO the correction is shrunk toward
+  // zero and sigma widened, reaching no correction at all by REGIME_Z_HI.
+  REGIME_Z_LO: num("REGIME_Z_LO", 1.5),
+  REGIME_Z_HI: num("REGIME_Z_HI", 3.0),
+  REGIME_SIGMA_INFLATE: num("REGIME_SIGMA_INFLATE", 0.5),
   SIGMA_MULT: num("SIGMA_MULT", 1.0),      // post-hoc sigma calibration; the backtest fits this
   EMPIRICAL_W: num("EMPIRICAL_W", 0),      // blend weight on the raw member histogram (0 = pure parametric)
 
@@ -171,7 +187,13 @@ const cfg = {
   MIN_ORDER_SHARES: num("MIN_ORDER_SHARES", 5),   // Polymarket orderMinSize on these markets
 
   // ── Sizing ─────────────────────────────────────────────
-  SIZING:   str("SIZING", "kelly"),        // primary mode, used where a single answer is needed
+  // Equal-share is the default. Over the first paired settlements it took 0 covered losses
+  // against Kelly's 3 on the same markets (+16.0% vs -11.1% ROI, identical 85.7% cover), and
+  // the structural reason holds at any sample size: equal SHARES means every covered outcome
+  // pays alike, so being right about the neighbourhood is always profitable. Kelly's
+  // concentration partly defeats the premise of a ladder, which exists precisely because you
+  // cannot pick the bucket. Kelly keeps running as the challenger via SIZING_MODES.
+  SIZING:   str("SIZING", "equal"),        // primary mode, used where a single answer is needed
   // Sizing policies to run SIDE BY SIDE. Each is its own paper book with its own bankroll, and
   // every qualifying ladder is built under each policy on the SAME scan, the same forecast and
   // the same order books — so the only variable between them is the sizing rule. Kelly and

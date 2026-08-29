@@ -28,11 +28,11 @@ const plan = (over = {}) => ({
 
 test("basket lifecycle: place, win on the centre rung, and settle the balance", async () => {
   await db.initDB();
-  assert.equal(db.getBalance(cfg.SIZING), 1000);
+  assert.equal(db.getBalance("kelly"), 1000);
 
   const id = db.placeBasket(plan(), "kelly");
   assert.ok(id);
-  assert.equal(db.getBalance(cfg.SIZING), 940, "the whole outlay is debited up front");
+  assert.equal(db.getBalance("kelly"), 940, "the whole outlay is debited up front");
   assert.equal(db.getLegs(id).length, 3);
   assert.ok(db.hasOpenBasket("evt1"));
   assert.equal(db.openExposure(), 60);
@@ -43,7 +43,7 @@ test("basket lifecycle: place, win on the centre rung, and settle the balance", 
   assert.equal(r.winLabel, "30°C");
   assert.equal(r.payout, 100);
   assert.equal(r.pnl, 40);
-  assert.equal(db.getBalance(cfg.SIZING), 1040);
+  assert.equal(db.getBalance("kelly"), 1040);
   const legs = db.getLegs(id);
   assert.equal(legs.filter(l => l.won === 1).length, 1, "exactly one rung can win");
 });
@@ -57,26 +57,26 @@ test("an open tail rung wins for anything at or beyond its degree", async () => 
 });
 
 test("a miss outside the cluster loses the whole outlay and nothing more", async () => {
-  const before = db.getBalance(cfg.SIZING);
+  const before = db.getBalance("kelly");
   const id = db.placeBasket(plan({ eventId: "evt3" }), "kelly");
   const r = db.settleBasket(id, 27, "iem-asos");
   assert.equal(r.status, "lost");
   assert.equal(r.payout, 0);
   assert.equal(r.pnl, -60);
-  assert.equal(db.getBalance(cfg.SIZING), before - 60);
+  assert.equal(db.getBalance("kelly"), before - 60);
   assert.ok(db.getLegs(id).every(l => l.won === 0));
 });
 
 test("a station that never reports voids and refunds in full", async () => {
-  const before = db.getBalance(cfg.SIZING);
+  const before = db.getBalance("kelly");
   const id = db.placeBasket(plan({ eventId: "evt4" }), "kelly");
   const r = db.settleBasket(id, null, null);
   assert.equal(r.status, "void");
-  assert.equal(db.getBalance(cfg.SIZING), before, "void is economically a no-op");
+  assert.equal(db.getBalance("kelly"), before, "void is economically a no-op");
 });
 
 test("stats aggregate hit rate and ROI over settled baskets", () => {
-  const s = db.getStats(cfg.SIZING);
+  const s = db.getStats("kelly");
   assert.equal(s.wonBaskets, 2);
   assert.equal(s.lostBaskets, 1);
   assert.equal(s.voidBaskets, 1);
@@ -185,7 +185,7 @@ test("a COVERED outcome can still lose money, and the stats say so", () => {
   assert.ok(r.pnl < 0, `covered but lost: pnl ${r.pnl}`);
   assert.ok(Math.abs(r.pnl - (15.17 - 29.99)) < 0.01, "loss is basket cost minus the outer rung's payout");
 
-  const stats = db.getStats(cfg.SIZING);
+  const stats = db.getStats("kelly");
   assert.ok(stats.coverRate > 0, "cover rate counts it as covered");
   assert.ok(stats.coveredLosses >= 1, "and it is flagged as a covered loss");
   assert.ok(stats.profitRate < stats.coverRate, "profit rate must be able to sit BELOW cover rate");

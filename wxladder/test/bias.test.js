@@ -127,3 +127,41 @@ test("omitting targetLead keeps the original pooled behaviour", () => {
   assert.equal(f.targetLead, null);
   assert.ok(Math.abs(f.sd - f.sdPooled) < 1e-9);
 });
+
+test("sigma is inflated while the fit is seeded, and relaxes as live pairs arrive", () => {
+  // Seeded pairs come from the historical-forecast archive, which stores a SHORT-LEAD forecast.
+  // Measured true-D+1 sd / archived sd = 1.90 / 2.31 / 2.53 at EDDM, LFPB, EGLC — so a fit
+  // dominated by seeded rows understates live uncertainty by roughly 2.3x.
+  const mk = (i, nMembers) => ({ date: `2026-08-${String(1 + i).padStart(2, "0")}`,
+    rawCenter: 20 + (i % 2 ? 0.5 : -0.5), obs: 21, leadDays: 1, nMembers });
+  const opts = { asOf: "2026-08-25", windowDays: 40, halfLifeDays: 999, seededInflate: 2.3 };
+
+  const seeded = bias.fitBias(Array.from({ length: 20 }, (_, i) => mk(i, 0)), opts);
+  const live = bias.fitBias(Array.from({ length: 20 }, (_, i) => mk(i, 50)), opts);
+  const half = bias.fitBias(Array.from({ length: 20 }, (_, i) => mk(i, i < 10 ? 0 : 50)), opts);
+
+  assert.equal(seeded.seededFrac, 1);
+  assert.equal(live.seededFrac, 0);
+  assert.equal(seeded.sigmaInflate, 2.3);
+  assert.equal(live.sigmaInflate, 1);
+  assert.ok(Math.abs(half.sigmaInflate - 1.65) < 1e-6, "inflation scales with the seeded share");
+  assert.ok(seeded.sd > live.sd, "a seeded fit must not claim live-quality confidence");
+  assert.ok(Math.abs(seeded.sd / live.sd - 2.3) < 1e-6);
+
+  // The bias itself is untouched — only the uncertainty around it.
+  assert.ok(Math.abs(seeded.bias - live.bias) < 1e-9);
+  // Opting out restores the raw residual.
+  assert.equal(bias.fitBias(Array.from({ length: 20 }, (_, i) => mk(i, 0)), { ...opts, seededInflate: 1 }).sigmaInflate, 1);
+});
+
+test("the fit reports the raw-forecast distribution the regime guard needs", () => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({
+    date: `2026-08-${String(1 + i).padStart(2, "0")}`, rawCenter: 25 + i, obs: 26 + i, leadDays: 1, nMembers: 40,
+  }));
+  const f = bias.fitBias(rows, { asOf: "2026-08-20", windowDays: 40, halfLifeDays: 999 });
+  assert.ok(Math.abs(f.rawMean - 30.5) < 0.01, `rawMean ${f.rawMean}`);
+  assert.ok(f.rawSd > 3 && f.rawSd < 4, `rawSd ${f.rawSd}`);
+  // A single pair cannot define a spread, so the guard must stay off rather than divide by zero.
+  const one = bias.fitBias([rows[0]], { asOf: "2026-08-20", windowDays: 40 });
+  assert.equal(one.rawSd, null);
+});

@@ -150,7 +150,8 @@ function biasPairs(station, kind, leadDays, limit = 400) {
 // bias +1.26 at lead 1 vs +1.28 at lead 2, with the large offsets stable to within 0.3 C
 // (Changi 2.26/2.28, Haneda 4.19/4.48).
 function biasPairsAllLeads(station, kind, limit = 1200) {
-  return q(`SELECT f.marketDate AS date, f.rawCenter AS rawCenter, f.ensSd AS ensSd, f.leadDays AS leadDays, o.value AS obs
+  return q(`SELECT f.marketDate AS date, f.rawCenter AS rawCenter, f.ensSd AS ensSd, f.leadDays AS leadDays,
+                   f.nMembers AS nMembers, o.value AS obs
             FROM forecasts f JOIN obs o
               ON o.station=f.station AND o.kind=f.kind AND o.obsDate=f.marketDate
             WHERE f.station=? AND f.kind=?

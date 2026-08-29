@@ -23,7 +23,8 @@ const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.pa
 // pairs — at these horizons the error is dominated by station representativeness rather than
 // forecast decay — so the default growth is a slight margin above 1, not a large penalty.
 function fitBias(pairs, { asOf, windowDays = 30, halfLifeDays = 10, clampTo = 4,
-                          targetLead = null, sigmaGrowth = 1.05, minLeadPairs = 10 } = {}) {
+                          targetLead = null, sigmaGrowth = 1.05, minLeadPairs = 10,
+                          seededInflate = 1 } = {}) {
   const usable = (pairs || [])
     .filter(p => p && p.obs != null && p.rawCenter != null && isFinite(p.obs) && isFinite(p.rawCenter))
     .map(p => ({ ...p, err: p.obs - p.rawCenter, age: asOf ? daysBetween(p.date, asOf) : 0 }))
@@ -40,6 +41,23 @@ function fitBias(pairs, { asOf, windowDays = 30, halfLifeDays = 10, clampTo = 4,
   const sd = Math.sqrt(varW);
   // Raw RMSE about zero, i.e. what you would suffer by not correcting at all.
   const rmseUncorrected = Math.sqrt(usable.reduce((s, p, i) => s + w[i] * p.err ** 2, 0) / wSum);
+
+  // Distribution of the RAW forecast across the fit window. The regime guard compares today's
+  // forecast against this: a day far outside it is a day the fitted offset was never observed
+  // under, so the correction should not be trusted at full strength.
+  const raws = usable.map(p => p.rawCenter).filter(v => v != null && isFinite(v));
+  const rawMean = raws.length ? raws.reduce((a, b) => a + b, 0) / raws.length : null;
+  const rawSd = raws.length > 1
+    ? Math.sqrt(raws.reduce((a, b) => a + (b - rawMean) ** 2, 0) / (raws.length - 1))
+    : null;
+
+  // How much of this fit is SEEDED (archived short-lead forecasts) rather than live D+1.
+  // Seeded rows are written with nMembers 0; live rows carry the real ensemble member count.
+  // Archived residuals are ~2.3x tighter than the D+1 forecast actually traded on, so sigma
+  // is inflated in proportion and the inflation decays as live pairs accumulate.
+  const seeded = usable.filter(p => !(p.nMembers > 0)).length;
+  const seededFrac = n ? seeded / n : 0;
+  const inflate = 1 + (Math.max(1, seededInflate) - 1) * seededFrac;
 
   // Sigma for the requested lead: measured from that lead's own pairs when there are enough,
   // otherwise the pooled residual inflated toward it. Never quietly reuse a shorter lead's
@@ -61,9 +79,15 @@ function fitBias(pairs, { asOf, windowDays = 30, halfLifeDays = 10, clampTo = 4,
     }
   }
 
+  sdUsed *= inflate;
+
   return {
     n,
     weightedN: +wSum.toFixed(2),
+    rawMean: rawMean == null ? null : +rawMean.toFixed(3),
+    rawSd: rawSd == null ? null : +rawSd.toFixed(3),
+    seededFrac: +seededFrac.toFixed(3),
+    sigmaInflate: +inflate.toFixed(3),
     bias: +clamp(bias, -clampTo, clampTo).toFixed(3),
     biasUnclamped: +bias.toFixed(3),
     sd: +sdUsed.toFixed(3),

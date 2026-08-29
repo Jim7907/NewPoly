@@ -124,7 +124,24 @@ function buildLadder(input, p = cfg) {
   if (!forecast || forecast.rawCenter == null) { reasons.push("no-forecast"); return out; }
 
   // ── 1. Center on the bias-corrected STATION forecast (art. §8) ──
-  const bias = biasFit && biasFit.ready ? biasFit.bias : 0;
+  let bias = biasFit && biasFit.ready ? biasFit.bias : 0;
+  // ── Regime guard ──
+  // The bias is a station-vs-grid offset fitted under the conditions of its own window. When
+  // today's forecast sits far outside that window the offset was never observed under this
+  // airmass, and applying it at full strength can make the centre WORSE — on the Munich bust
+  // the +1.82 C correction turned a -3.43 C raw error into -5.24 C. Outside REGIME_Z_LO the
+  // correction is shrunk toward zero and sigma widened, reaching no correction by REGIME_Z_HI.
+  let regimeW = 1;
+  if (biasFit && biasFit.ready && biasFit.rawSd > 0 && forecast && forecast.rawCenter != null) {
+    const z = (forecast.rawCenter - biasFit.rawMean) / biasFit.rawSd;
+    const az = Math.abs(z);
+    const lo = p.REGIME_Z_LO, hi = Math.max(p.REGIME_Z_HI, p.REGIME_Z_LO + 1e-6);
+    regimeW = M.clamp(1 - (az - lo) / (hi - lo), 0, 1);
+    out.regimeZ = +z.toFixed(2);
+    out.regimeWeight = +regimeW.toFixed(3);
+    out.inRegime = regimeW >= 1;
+    bias *= regimeW;
+  }
   const center = forecast.rawCenter + bias;
   out.rawCenter = +forecast.rawCenter.toFixed(2);
   out.bias = +bias.toFixed(3);
@@ -156,10 +173,15 @@ function buildLadder(input, p = cfg) {
   out.detSpreadSamples = (tracks.det || []).length;
 
   // ── 3. Predictive sigma, anchored on this station's REALIZED post-correction error ──
+  // Out of regime the centre is less trustworthy, so widen as well as shrink the correction.
+  const regimeMult = 1 + (p.REGIME_SIGMA_INFLATE ?? 0) * (1 - regimeW);
   const sigma = M.predictiveSigma({
     rmse: biasFit && biasFit.ready ? biasFit.rmse : null,
-    dispRatio, gamma: p.SPREAD_GAMMA, floor: p.SD_FLOOR, fallback: p.SD_FALLBACK, mult: p.SIGMA_MULT,
+    dispRatio, gamma: p.SPREAD_GAMMA, floor: p.SD_FLOOR, fallback: p.SD_FALLBACK,
+    mult: (p.SIGMA_MULT ?? 1) * regimeMult,
   });
+  out.sigmaInflate = biasFit ? biasFit.sigmaInflate ?? null : null;
+  out.seededFrac = biasFit ? biasFit.seededFrac ?? null : null;
   out.sigma = +sigma.toFixed(3);
 
   // ── 4. Model distribution over the buckets ──
