@@ -1,7 +1,7 @@
 # VeSync Internal Marketing Platform Research
 ## Recommendation: an Environmental Demand Engine (working name: "Barometer")
 
-*Research date: 2 September 2026. Prepared as a build proposal for VeSync (Levoit, Cosori, Etekcity, Pawsync). Scientific and market evidence for every design assumption is in the companion document `vesync-scientific-evidence-base.md`.*
+*Research date: 2 September 2026. Prepared as a build proposal for VeSync (Levoit, Cosori, Etekcity, Pawsync). Scientific and market evidence for every design assumption is in `vesync-scientific-evidence-base.md`. The extension of the same engine to Cosori, Etekcity and Pawsync, with a signal registry as the core abstraction, is in `vesync-one-platform-all-brands.md`.*
 
 ---
 
