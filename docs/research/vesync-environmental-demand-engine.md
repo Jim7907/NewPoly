@@ -1,7 +1,7 @@
 # VeSync Internal Marketing Platform Research
 ## Recommendation: an Environmental Demand Engine (working name: "Barometer")
 
-*Research date: 2 September 2026. Prepared as a build proposal for VeSync (Levoit, Cosori, Etekcity, Pawsync).*
+*Research date: 2 September 2026. Prepared as a build proposal for VeSync (Levoit, Cosori, Etekcity, Pawsync). Scientific and market evidence for every design assumption is in the companion document `vesync-scientific-evidence-base.md`.*
 
 ---
 
@@ -9,7 +9,7 @@
 
 **Build an internal, closed-loop marketing platform that turns real-world environmental and health conditions into money, ahead of the moment, across every channel VeSync sells through.**
 
-The platform ingests public hazard feeds (wildfire smoke, AQI, pollen, flu, humidity, heat), fuses them with the one dataset nobody else has (aggregate readings from the 5.5M+ VeSync-connected devices, most of which carry AirSight PM1/PM2.5/PM10 laser sensors), and produces a ZIP-level **Home Health Demand Index** forecast 3 to 14 days out for each product line. It then acts on that forecast automatically: postal-code bid indexes into Amazon DSP, rule-based audiences into Amazon Marketing Cloud, budget and keyword shifts in Sponsored Products, geo-targeted Meta/Google/TikTok campaigns, Walmart Connect, Klaviyo/Shopify CRM flows, and VeSync-app push. Spend is gated on live inventory from the Amazon SP-API and Walmart so no dollar is spent into a stockout. Every activation is measured with geo-holdout incrementality, Amazon Marketing Stream hourly data, and Search Query Performance share.
+The platform ingests public hazard feeds (wildfire smoke, AQI, pollen, flu, humidity, heat), fuses them with the one dataset nobody else has (aggregate readings from the 5.5M+ VeSync-connected devices, most of which carry AirSight PM1/PM2.5/PM10 laser sensors), and produces a ZIP-level **Home Health Demand Index** on three horizons for each product line: activate (0 to 72 hours), schedule (3 to 7 days), and watch (7 to 30 days, inventory pre-positioning only). The horizons follow the forecast-skill evidence in the companion document `vesync-scientific-evidence-base.md`. It then acts on that forecast automatically: postal-code bid indexes into Amazon DSP, rule-based audiences into Amazon Marketing Cloud, budget and keyword shifts in Sponsored Products, geo-targeted Meta/Google/TikTok campaigns, Walmart Connect, Klaviyo/Shopify CRM flows, and VeSync-app push. Spend is gated on live inventory from the Amazon SP-API and Walmart so no dollar is spent into a stockout. Every activation is measured with geo-holdout incrementality, Amazon Marketing Stream hourly data, and Search Query Performance share.
 
 **Why it is not available on the public market:**
 
@@ -99,6 +99,9 @@ For each (geo cell, product family, horizon) produce a 0-100 **Home Health Deman
 - Product families: air purifier, replacement filter, humidifier, dehumidifier/fan/heater, vacuum (dust/pollen season), Cosori (separate food-trend module, Phase 4), Pawsync (pet dander + shedding season).
 - Features: outdoor AQI now and 72h forecast, smoke plume probability, fire radiative power within 300km and wind vector, pollen index by species, ILI%, dew point, NWS alert flags, indoor PM2.5 median from fleet, share of fleet on high speed, filter-life distribution, search interest, social mention velocity, day-of-week and promo calendar, prior event response curves.
 - Model: gradient-boosted regression per family trained on 2023 to 2026 sales history (the June 2023 Canadian wildfire spike is a clean training event; Levoit Core 300 "sales spiked on Amazon" that week). Start with a transparent rules-plus-weights index; graduate to ML once holdout data accumulates.
+- Horizons: **activate** 0 to 72 h (smoke, AQI, NWS alerts; forecast skill is only directional beyond this), **schedule** 3 to 7 d (pollen, dew point, heat), **watch** 7 to 30 d (NIFC fire-potential outlook and drought; moves inventory, not spend).
+- Triggers keyed to EPA AQI category boundaries (101, 151, 201), which the literature shows are the thresholds consumers react to; event campaigns run 7 to 14 days past the plume because scanner data show the purchase response persists.
+- Fleet aggregates pass through the EPA humidity-aware low-cost-sensor correction and are capped at the sensor's linear range before use.
 - Output every hour: HHDI grid, top-N geo cells crossing thresholds, expected uplift, recommended budget by channel.
 
 ### 3.3 Inventory and channel guard
