@@ -19,7 +19,7 @@ const firstparty = require('./firstparty')
 const demo = require('./demo')
 const { BRANDS, HORIZONS, CHANNELS, ROUTING, MONEY, PRIVACY, DETECT } = require('./config')
 
-const PORT = process.env.PORT || 3003
+const PORT = process.env.PORT || 3004
 const app = express()
 app.use(cors({ origin: '*' }))
 app.use(express.json({ limit: '25mb' }))

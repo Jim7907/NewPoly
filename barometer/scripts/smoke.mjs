@@ -1,11 +1,11 @@
 /**
- * End-to-end smoke test against a running Barometer (default http://localhost:3003).
+ * End-to-end smoke test against a running Barometer (default http://localhost:3004).
  * Loads demo data, simulates a smoke event over OR + WA through the manual signal feed,
  * and drives one opportunity through creative → plan → gate → approve → launch → undo → results.
  * Safe to run on a fresh install: writes stay dry-run unless LIVE_WRITES=true on the server.
  *   node scripts/smoke.mjs [baseUrl] [firstpartyToken]
  */
-const B = (process.argv[2] || 'http://localhost:3003') + '/api'
+const B = (process.argv[2] || 'http://localhost:3004') + '/api'
 const TOKEN = process.argv[3] || process.env.FIRSTPARTY_INGEST_TOKEN || 'test-token'
 const j = async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d }
 const get = (p) => fetch(B + p).then(j)

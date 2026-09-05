@@ -20,7 +20,7 @@ git checkout claude/vesync-marketing-platform-research-97dyo1
 cd barometer && cp .env.example .env && docker compose up --build -d
 ```
 
-Open `http://<vps-ip>:3003`. Port **3003** (crypto15m keeps 3002). Re-run `deploy.sh` any time to pull and rebuild; `.env` and the database volume survive. Without Docker: `systemd/barometer.service`.
+Open `http://<vps-ip>:3004`. The host port defaults to **3004**; pick another with `PORT=3010 ./deploy.sh` (or `PORT=3010 docker compose up --build -d`). Re-run `deploy.sh` any time to pull and rebuild; `.env` and the database volume survive. Without Docker: `systemd/barometer.service`.
 
 What happens on first boot, with no keys at all:
 
@@ -29,7 +29,7 @@ What happens on first boot, with no keys at all:
 - every cell gets an index per brand family per horizon; opportunities are detected and creative is drafted (templates until an Anthropic key is set)
 - every ad-platform write is **dry-run**: the exact payload is recorded on the plan, nothing is sent
 
-Then `node scripts/smoke.mjs http://<vps-ip>:3003 <FIRSTPARTY_INGEST_TOKEN>` walks one opportunity through the whole loop with demo data and asserts the rules held.
+Then `node scripts/smoke.mjs http://<vps-ip>:3004 <FIRSTPARTY_INGEST_TOKEN>` walks one opportunity through the whole loop with demo data and asserts the rules held.
 
 ## Turning things on
 
@@ -55,7 +55,7 @@ Everything is an environment variable in `barometer/.env`. Leave a key blank and
 Barometer never connects to the VeSync IoT platform. The team that owns device data aggregates readings to ZIP3 on their side and POSTs them:
 
 ```bash
-curl -X POST http://<host>:3003/api/firstparty/readings \
+curl -X POST http://<host>:3004/api/firstparty/readings \
   -H "Authorization: Bearer $FIRSTPARTY_INGEST_TOKEN" -H 'Content-Type: application/json' \
   -d '{"readings":[
         {"zip3":"972","brand":"levoit","metric":"indoor_pm25","value":41.2,"deviceCount":1840,"observedAt":"2026-09-05T14:00:00Z"},
@@ -107,7 +107,7 @@ Send `x-actor: <name>` on writes; it lands in the audit trail.
 cp .env.example .env
 npm install
 npm test          # 20 deterministic tests, no network
-npm run server    # API + feeds + scoring on :3003
+npm run server    # API + feeds + scoring on :3004
 npm run dev       # + Vite UI on :3000
 node scripts/smoke.mjs   # end-to-end against a running server
 ```

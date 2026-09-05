@@ -9,7 +9,7 @@ set -euo pipefail
 REPO="${REPO:-https://github.com/Jim7907/NewPoly.git}"
 BRANCH="${BRANCH:-claude/vesync-marketing-platform-research-97dyo1}"
 DIR="${DIR:-$HOME/NewPoly}"
-PORT="${PORT:-3003}"
+PORT="${PORT:-3004}"   # host port; change with PORT=xxxx ./deploy.sh
 
 echo "==> Deploying barometer (branch: $BRANCH) to $DIR"
 
@@ -30,7 +30,7 @@ fi
 
 if docker compose version >/dev/null 2>&1; then
   echo "==> Building + starting with Docker Compose"
-  docker compose up --build -d
+  PORT="$PORT" docker compose up --build -d
   docker compose ps
 else
   echo "==> Docker Compose not found; falling back to Node"

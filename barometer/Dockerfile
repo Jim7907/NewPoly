@@ -7,7 +7,7 @@ COPY . .
 RUN npm run build
 
 ENV NODE_ENV=production
-ENV PORT=3003
-EXPOSE 3003
+ENV PORT=3004
+EXPOSE 3004
 
 CMD ["node", "server/index.js"]

@@ -10,7 +10,7 @@ export default function System({ status, onChange }) {
   useEffect(load, [location.hash])
   const act = (fn, msg) => fn().then(() => { load(); onChange && onChange(); if (msg) say(msg) }).catch(e => say(e.message))
   if (!status) return <div className="muted">loading…</div>
-  const curl = `curl -X POST http://<host>:3003/api/firstparty/readings \\\n  -H 'Authorization: Bearer $FIRSTPARTY_INGEST_TOKEN' -H 'Content-Type: application/json' \\\n  -d '{"readings":[{"zip3":"972","brand":"levoit","metric":"indoor_pm25","value":41.2,"deviceCount":1840,"observedAt":"${new Date().toISOString()}"}]}'`
+  const curl = `curl -X POST http://<host>:3004/api/firstparty/readings \\\n  -H 'Authorization: Bearer $FIRSTPARTY_INGEST_TOKEN' -H 'Content-Type: application/json' \\\n  -d '{"readings":[{"zip3":"972","brand":"levoit","metric":"indoor_pm25","value":41.2,"deviceCount":1840,"observedAt":"${new Date().toISOString()}"}]}'`
   return <>
     {toast}
     <div className="head"><div><h1>System</h1><div className="sub">Feeds, the holdout, the open first-party adapter, inventory, and the audit trail.</div></div>

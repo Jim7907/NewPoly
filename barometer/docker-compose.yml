@@ -6,12 +6,12 @@ services:
     container_name: barometer
     restart: unless-stopped
     ports:
-      - "3003:3003"
+      - "${PORT:-3004}:3004"
     env_file:
       - .env
     environment:
       - NODE_ENV=production
-      - PORT=3003
+      - PORT=3004
       - DB_PATH=/app/data
     volumes:
       - barometer_data:/app/data
