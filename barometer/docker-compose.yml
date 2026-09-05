@@ -1,0 +1,26 @@
+services:
+  barometer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: barometer
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - DB_PATH=/app/data
+    volumes:
+      - barometer_data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  barometer_data:
+    driver: local
