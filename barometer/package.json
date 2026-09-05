@@ -1,0 +1,31 @@
+{
+  "name": "barometer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Barometer — VeSync's signal-driven advertising platform. Reads public hazard, health, economic and cultural feeds plus aggregated first-party device data, scores every US ZIP3 per brand, drafts creative, routes spend through an inventory gate and a locked holdout, and measures lift.",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "client": "vite",
+    "server": "node server/index.js",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "test": "node --test test/*.test.js",
+    "grid": "python3 scripts/build-zip3.py"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.54.0",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "sql.js": "^1.12.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^8.2.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  }
+}
