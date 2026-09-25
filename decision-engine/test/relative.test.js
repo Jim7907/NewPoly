@@ -305,6 +305,8 @@ test("xsRank: smooth, monotone, shrunk toward 0.5 with few peers", () => {
 test("cache: sliding-window slices (dataset-builder style) give identical output to a fresh build", () => {
   const u = universe({ n: 800, nPeers: 12 });
   const cache = {};
+  const primed = {};   // holds FULL histories → every window below is served as a sub-range view (start > 0)
+  R.signals(u.asset, { peers: u.peers, benchmark: u.benchmark, assetClass: "stock", symbol: "A", cache: primed });
   for (const i of [500, 501, 502, 650, 799]) {
     const t = u.asset[i].t;
     const win = (cs) => cs.slice(Math.max(0, i + 1 - 420), i + 1);
@@ -314,6 +316,7 @@ test("cache: sliding-window slices (dataset-builder style) give identical output
     assert.ok(fresh.length >= 7, `window ${i}: ${fresh.length}`);
     const cachedWin = R.signals(aw, { ...o, cache });
     assert.deepStrictEqual(cachedWin, fresh, `window ${i}`);
+    assert.deepStrictEqual(R.signals(aw, { ...o, cache: primed }), fresh, `primed view ${i}`);
     // Full arrays + t through a (different) cache: same signals; values agree up to longer-history effects.
     const cachedFull = R.signals(u.asset, { peers: u.peers, benchmark: u.benchmark, assetClass: "stock", symbol: "A", t, cache: {} });
     assert.deepStrictEqual(cachedFull.map((s) => s.id), fresh.map((s) => s.id));

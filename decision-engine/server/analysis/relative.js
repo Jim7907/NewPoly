@@ -42,7 +42,8 @@
 //    MIXED. Some hourly studies find BTC leading, but others find bidirectional or insignificant lead–lag at
 //    daily frequency (e.g. Sifat, Mohamad & Mohamed Shariff 2019, RIBAF), and a single market factor
 //    explains most co-movement contemporaneously (Liu, Tsyvinski & Wu 2022). → rel.btc_lead has a low
-//    prior, especially for swing/position, and its confidence halves once the alt has already made the move.
+//    prior, especially for swing/position, and both its score and its confidence shrink once the alt has
+//    already made the implied move.
 //
 // ── Horizon mapping ────────────────────────────────────────────────────────────────────────────────
 //  swing / position: daily lookbacks in bars. Stocks count trading days (21 = 1m, 252 = 12m). Crypto
@@ -130,15 +131,15 @@ const validCandle = (k) => k && isNum(k.t) && isNum(k.c) && k.c > 0;
 function headOf(c) { for (let i = 0; i < c.length; i++) if (validCandle(c[i])) return c[i]; return null; }
 function tailOf(c) { for (let i = c.length - 1; i >= 0; i--) if (validCandle(c[i])) return c[i]; return null; }
 
-// Median bar spacing (ms) over the last ≤ 60 bars — robust to weekend and overnight gaps.
-function spacingOf(candles) {
+// Median bar spacing (ms) over the last ≤ 60 bars at or before tCut — robust to weekend/overnight gaps.
+function spacingOf(candles, tCut = Infinity) {
   const d = [];
-  let prev = null;
-  for (let i = Math.max(0, candles.length - 61); i < candles.length; i++) {
+  let next = null;
+  for (let i = candles.length - 1; i >= 0 && d.length < 60; i--) {
     const k = candles[i];
-    if (!validCandle(k)) continue;
-    if (prev != null && k.t > prev) d.push(k.t - prev);
-    prev = k.t;
+    if (!validCandle(k) || k.t > tCut) continue;
+    if (next != null && next > k.t) d.push(next - k.t);
+    next = k.t;
   }
   if (!d.length) return DAY;
   d.sort((a, b) => a - b);
@@ -147,13 +148,16 @@ function spacingOf(candles) {
 const isDailySpacing = (ms) => ms >= 20 * 3600e3;
 const dayKey = (t) => Math.floor(t / DAY) * DAY;
 
-function resolveClass(ac, symbol, candles) {
+function resolveClass(ac, symbol, candles, tCut = Infinity) {
   if (ac === "crypto" || ac === "stock") return ac;
   if (/^CRYPTO:/i.test(String(symbol || ""))) return "crypto";
-  let wk = 0;
-  for (let i = Math.max(0, candles.length - 30); i < candles.length; i++) {
+  let wk = 0, seen = 0;
+  for (let i = candles.length - 1; i >= 0 && seen < 30; i--) {
     const k = candles[i];
-    if (validCandle(k)) { const d = new Date(k.t).getUTCDay(); if (d === 0 || d === 6) wk++; }
+    if (!validCandle(k) || k.t > tCut) continue;
+    seen++;
+    const d = new Date(k.t).getUTCDay();
+    if (d === 0 || d === 6) wk++;
   }
   return wk >= 2 ? "crypto" : "stock";
 }
@@ -170,8 +174,30 @@ function lookbacks(cls, horizon) {
 // ───────────────────────────── prepared series + cache ─────────────────────────────
 let SEQ = 0;
 
-// Candle[] → sorted, de-duplicated log-price series keyed for alignment.
+// Candle[] → sorted, de-duplicated log-price series keyed for alignment. Single pass for the normal
+// (ascending) case; unsorted input falls back to a sort.
 function buildSeries(candles, daily) {
+  const n0 = candles.length;
+  const keys = new Float64Array(n0), tt = new Float64Array(n0), cc = new Float64Array(n0), lc = new Float64Array(n0);
+  let m = 0, lastT = -Infinity;
+  for (let i = 0; i < n0; i++) {
+    const k = candles[i];
+    if (!k) continue;
+    const t = k.t, c = k.c;
+    if (typeof t !== "number" || typeof c !== "number" || !(c > 0) || !Number.isFinite(t) || c === Infinity) continue;
+    if (t <= lastT) return buildSeriesSorted(candles, daily);
+    lastT = t;
+    const key = daily ? Math.floor(t / DAY) * DAY : t;
+    if (m && key === keys[m - 1]) m--;              // same session bucket → the later bar wins
+    keys[m] = key; tt[m] = t; cc[m] = c; lc[m] = Math.log(c); m++;
+  }
+  return seriesOf(daily, m, keys, tt, cc, lc);
+}
+function seriesOf(daily, m, keys, tt, cc, lc) {
+  return { id: ++SEQ, v: VERSION, daily, n: m, keys: keys.subarray(0, m), t: tt.subarray(0, m), c: cc.subarray(0, m),
+    lc: lc.subarray(0, m), al: new Map(), gr: null, ref: null, rawLen: 0, tailT: NaN, tailC: NaN };
+}
+function buildSeriesSorted(candles, daily) {
   const n0 = candles.length;
   let t = new Float64Array(n0), c = new Float64Array(n0);
   let n = 0, sorted = true;
@@ -195,8 +221,7 @@ function buildSeries(candles, daily) {
     if (m && key === keys[m - 1]) m--;              // same session bucket → the later bar wins
     keys[m] = key; tt[m] = t[i]; cc[m] = c[i]; lc[m] = Math.log(c[i]); m++;
   }
-  return { id: ++SEQ, v: VERSION, daily, n: m, keys: keys.subarray(0, m), t: tt.subarray(0, m), c: cc.subarray(0, m),
-    lc: lc.subarray(0, m), al: new Map(), gr: null, ref: null, rawLen: 0, tailT: NaN, tailC: NaN };
+  return seriesOf(daily, m, keys, tt, cc, lc);
 }
 
 const cacheGet = (cache, k) => (!cache || !k ? null : cache instanceof Map ? cache.get(k) : cache[k]);
@@ -460,14 +485,14 @@ function signals(candles, opts = {}) {
   const horizon = typeof opts.horizon === "string" && opts.horizon ? opts.horizon : "swing";
   const hz = HMULT.long[horizon] != null ? horizon : "swing";
   const cache = opts.cache && typeof opts.cache === "object" ? opts.cache : null;
+  const tCut = isNum(opts.t) ? (opts.t < 1e11 ? opts.t * 1000 : opts.t) : Infinity;
   const sym = norm(opts.symbol);
-  const cls = resolveClass(opts.assetClass, opts.symbol, candles);
+  const cls = resolveClass(opts.assetClass, opts.symbol, candles, tCut);
   const benchSym = norm(opts.benchmarkSymbol) || BENCH[cls];
-  const spacing = spacingOf(candles);
+  const spacing = spacingOf(candles, tCut);
   const daily = isDailySpacing(spacing);
   const tfTag = daily ? "1d" : `${Math.round(spacing / 60000)}m`;
   const ck = (s) => `${cls}:${s}:${tfTag}`;
-  const tCut = isNum(opts.t) ? (opts.t < 1e11 ? opts.t * 1000 : opts.t) : Infinity;
 
   // ---- asset view, truncated at t ----
   const aView = getView(cache, ck(sym || "__asset__"), candles, daily);
@@ -580,8 +605,8 @@ function signals(candles, opts = {}) {
       const conf = PRIOR[id][cls] * hmult(id, cls, hz) * (0.4 + 0.6 * sat(fHist)) * (0.55 + 0.45 * sat(Math.abs(z) / 2)) * (momLike ? crashF : 1);
       const lbl = nearWin(Le) ? (S ? `${Le}-${S} bar` : `${Le}-bar`) : Le < L ? `${Le}-bar${S ? ` (skip ${S})` : ""} (short history)` : label;
       let caveat = "";
-      if (cls === "stock" && id === "rel.rs.1m") caveat = " — single-stock 1-month moves partly reverse (Jegadeesh 1990), low weight";
-      if (cls === "crypto" && id !== "rel.rs.1m") caveat = " — beyond ~1 month crypto momentum fades/reverses (Dobrynskaya 2023), low weight";
+      if (cls === "stock" && id === "rel.rs.1m") caveat = daily ? " — single-stock 1-month moves partly reverse (Jegadeesh 1990), low weight" : " — short-window single-stock moves tend to partly reverse, low weight";
+      if (cls === "crypto" && id !== "rel.rs.1m") caveat = daily ? " — beyond ~1 month crypto momentum fades/reverses (Dobrynskaya 2023), low weight" : " — little evidence for long intraday windows, low weight";
       out.push(mk(id, score, conf, horizon,
         { exRet: Math.exp(ex) - 1, assetRet: Math.exp(ra) - 1, benchRet: Math.exp(rb) - 1, z, bars: e - s, skip: S,
           rank: rk ? rk.rank : null, nPeers: rk ? rk.n - 1 : vals.length, pct: rk ? rk.pct : null, beta: betaV },
@@ -681,15 +706,18 @@ function signals(candles, opts = {}) {
     const rA = retBetween(A, gK - L, gK);
     const vs = winStats(A, gp, gK - lb.ivol, gK);
     if (isNum(rB) && isNum(rA) && vs && vs.volA > 0 && gK - L >= A.first) {
+      // Lagged-beta view (Hou 2007): E[alt] ∝ β·r_BTC. Partial-adjustment view: only the part the alt has not
+      // yet made is left. The evidence is mixed, so the lead is scaled by (0.5 + 0.5·unreflected) in the score
+      // and again, milder, in the confidence.
       const implied = betaV * rB;
       const z = implied / (vs.volA * Math.sqrt(L));
-      const score = Math.tanh(z / 1.5);
       const unreflected = Math.abs(implied) > 1e-9 ? sat((implied - rA) / implied) : 0;
-      const conf = PRIOR["rel.btc_lead"].crypto * hmult("rel.btc_lead", cls, hz) * (0.35 + 0.65 * unreflected) * (0.4 + 0.6 * bst.r2) * sat(bst.n / 60);
+      const score = Math.tanh(z / 1.5) * (0.5 + 0.5 * unreflected);
+      const conf = PRIOR["rel.btc_lead"].crypto * hmult("rel.btc_lead", cls, hz) * (0.6 + 0.4 * unreflected) * (0.4 + 0.6 * bst.r2) * sat(bst.n / 60);
       out.push(mk("rel.btc_lead", score, conf, horizon,
         { btcRet: Math.exp(rB) - 1, implied: Math.exp(implied) - 1, altRet: Math.exp(rA) - 1, unreflected, bars: L, z, beta: betaV, corr: bst.corr, rank: null, nPeers: peers.length },
         `BTC ${sPct(rB)} over last ${L} bars × beta ${betaV.toFixed(2)} implies ${sPct(implied)} for ${name}, which moved ${sPct(rA)} (${Math.round(unreflected * 100)}% unreflected)` +
-        ` — BTC→alt lead–lag tilt ${score > 0.05 ? "bullish" : score < -0.05 ? "bearish" : "neutral"}; evidence mixed, low weight`));
+        ` — BTC→alt lead–lag tilt ${score > 0.1 ? "bullish" : score < -0.1 ? "bearish" : unreflected < 0.2 ? "neutral (already priced)" : "neutral"}; evidence mixed, low weight`));
     }
   }
 
