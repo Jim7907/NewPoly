@@ -100,3 +100,14 @@ test("maxDrawdown, sharpe, sortino, correlation", () => {
   assert.ok(close(R.correlation([9, 9, 1, 2, 3], [1, 2, 3]), 1), "uses overlapping tails");
   assert.strictEqual(R.correlation([1, NaN], [2]), 0);
 });
+
+test("positionSize: db-style open positions (costUsd, assetClass) drive gross cap and class-prior correlation", () => {
+  const args = { pUp: 0.6, riskReward: 1.5, atrPct: 0.02, annVol: 0.2, equity: 100000, cfg: CFG, assetClass: "stock" };
+  const base = R.positionSize(args).sizeFrac;
+  const r = R.positionSize({ ...args, openPositions: [{ assetId: "STOCK:AAPL", assetClass: "stock", costUsd: 20000 }] });
+  assert.ok(close(r.sizeFrac, base * 0.75), `${r.sizeFrac} vs ${base}`);
+  const c = R.positionSize({ ...args, assetClass: "crypto", openPositions: [{ assetClass: "crypto", costUsd: 5000 }] });
+  assert.ok(close(c.sizeFrac, 0.05 * 0.65));
+  const g = R.positionSize({ ...args, openPositions: [{ assetClass: "crypto", costUsd: 99000 }] });
+  assert.ok(close(g.sizeFrac, 0.01) && g.capped.includes("gross"));
+});

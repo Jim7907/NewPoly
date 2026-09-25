@@ -279,3 +279,11 @@ test("dataQuality object (freshness, failed candles) lowers confidence", () => {
 test("summary is deterministic", () => {
   assert.strictEqual(E.decide(base(bullish())).summary, E.decide(base(bullish())).summary);
 });
+
+test("an open long paper position on the asset turns SELL into an exit", () => {
+  const bear = bullish().map(s => ({ ...s, score: -s.score }));
+  const d = E.decide(base(bear, { openPositions: [{ assetId: "STOCK:NVDA", direction: "long", costUsd: 5000, assetClass: "stock" }] }));
+  assert.ok(d.action.endsWith("SELL"));
+  assert.strictEqual(d.sellIntent, "exit");
+  assert.strictEqual(d.risk.direction, null);
+});

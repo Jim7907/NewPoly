@@ -117,7 +117,14 @@ function positionSize({ pUp, riskReward, atrPct, annVol, equity, cfg = {}, openP
 
   const opens = Array.isArray(openPositions) ? openPositions : [];
   let rho = Number.isFinite(correlation) ? correlation : null;
-  if (rho == null) for (const p of opens) if (p && Number.isFinite(p.correlation)) rho = Math.max(rho ?? -1, p.correlation);
+  if (rho == null) for (const p of opens) {
+    if (!p || typeof p !== "object") continue;
+    // explicit per-position correlation wins; otherwise a class prior (crypto↔crypto 0.7,
+    // stock↔stock 0.5, cross-class 0.2) — crypto books are effectively one bet on BTC beta.
+    const r = Number.isFinite(p.correlation) ? p.correlation
+      : assetClass && p.assetClass ? (p.assetClass === assetClass ? (assetClass === "crypto" ? 0.7 : 0.5) : 0.2) : null;
+    if (r != null) rho = Math.max(rho ?? -1, r);
+  }
   if (rho != null && rho > 0) { size *= 1 - 0.5 * clamp(rho, 0, 1); capped.push("correlation"); }
 
   const used = opens.reduce((s, p) => {
@@ -125,6 +132,7 @@ function positionSize({ pUp, riskReward, atrPct, annVol, equity, cfg = {}, openP
     if (!p) return s;
     if (Number.isFinite(p.sizeFrac)) return s + Math.abs(p.sizeFrac);
     if (Number.isFinite(p.valueUsd) && eq > 0) return s + Math.abs(p.valueUsd) / eq;
+    if (Number.isFinite(p.costUsd) && eq > 0) return s + Math.abs(p.costUsd) / eq;       // db.positions rows
     return s;
   }, 0);
   const room = Math.max(0, maxGross - used);

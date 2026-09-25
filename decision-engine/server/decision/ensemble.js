@@ -394,7 +394,10 @@ function decide(input = {}, opts = {}) {
   const confidence = noEvidence ? 0 : conf0;
 
   // ---- risk geometry (for the leaning side) ----
-  const held = !!(a.held || (a.position && typeof a.position === "object" && fin(Number(a.position.qty ?? a.position.size ?? 1)) !== 0));
+  // Held = explicit flag / position, or an open LONG paper position on this asset (db rows).
+  const heldOpen = Array.isArray(a.openPositions) && asset.id != null
+    && a.openPositions.some(p => p && p.assetId === asset.id && (p.direction == null || p.direction === "long") && p.status !== "closed");
+  const held = !!(a.held || heldOpen || (a.position && typeof a.position === "object" && fin(Number(a.position.qty ?? a.position.size ?? 1)) !== 0));
   const price = fin(Number(a.price), NaN);
   const atr = fin(Number(a.atr), NaN) > 0 ? Number(a.atr) : null;
   const br0 = BRACKETS[horizon] || BRACKETS.swing;

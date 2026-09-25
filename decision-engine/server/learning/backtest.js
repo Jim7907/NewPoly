@@ -168,7 +168,7 @@ function run(params = {}) {
 
   let equity = capital, pos = null, pending = null, cachedRegime = null, regimeAge = Infinity;
   const trades = [], curve = [], evals = [], calibrationPairs = [], signalStats = {};
-  const actionCounts = {};
+  const actionCounts = {}, abstainCounts = {};
   let barsInPos = 0;
 
   const exitTrade = (i, px, reason) => {
@@ -225,6 +225,11 @@ function run(params = {}) {
       calibrator: p.calibrator, weights: p.weights, thresholds: p.thresholds, cfg: p.cfg, feeBps, expectedFamilies,
       equity: capital, openPositions: [] });
     actionCounts[d.action] = (actionCounts[d.action] || 0) + 1;
+    if (d.abstainReason) for (const part of d.abstainReason.split("; ")) {
+      const k = /^confidence/.test(part) ? "confidence" : /^edge/.test(part) ? "edge" : /^agreement/.test(part) ? "agreement"
+        : /cost/.test(part) ? "cost" : "noEvidence";
+      abstainCounts[k] = (abstainCounts[k] || 0) + 1;
+    }
 
     if (i + H < n) {
       const y = candles[i + H].c > bar.c ? 1 : 0;
@@ -272,7 +277,7 @@ function run(params = {}) {
     directionalAccuracy: acted.length ? r6(dirHits / acted.length) : null, nDecisions: evals.length, nActionable: acted.length,
     psr: r6(sig.psr), dsr: r6(sig.dsr), nTrials: fin(p.nTrials, 10),
     exits: trades.reduce((o, t) => ((o[t.reason] = (o[t.reason] || 0) + 1), o), {}),
-    actionCounts,
+    actionCounts, abstainCounts,
     buyHold: { cagr: r6(bh.cagr), totalReturn: r6(bh.totalReturn), sharpe: r6(bh.sharpe), sortino: r6(bh.sortino), maxDD: r6(bh.maxDD) },
     excessCagr: r6(cs.cagr - bh.cagr),
     period: { from: new Date(candles[warmup].t).toISOString(), to: new Date(candles[n - 1].t).toISOString(), bars: n - warmup, periodsPerYear: ppy },
