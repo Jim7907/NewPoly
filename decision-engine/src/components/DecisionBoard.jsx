@@ -257,7 +257,8 @@ export default function DecisionBoard({ decisions, ticks, minConf, selectedId, o
   const [q, setQ] = useState("");
   const [fdir, setFdir] = useState("all");
   let list = arr(decisions).filter(d => d && typeof d === "object");
-  if (fdir !== "all") list = list.filter(d => getForecast(d)?.dir === fdir);
+  const hasFc = list.some(d => getForecast(d));
+  if (fdir !== "all" && hasFc) list = list.filter(d => getForecast(d)?.dir === fdir);
   if (filter === "act") list = list.filter(d => isActionable(d.action));
   if (filter === "long") list = list.filter(d => isBullish(d.action));
   if (filter === "short") list = list.filter(d => isBearish(d.action));
@@ -287,7 +288,7 @@ export default function DecisionBoard({ decisions, ticks, minConf, selectedId, o
         <div style={{ display: "flex", gap: 4 }}>
           {[["all", "ALL"], ["act", "ACTIONABLE"], ["long", "LONG"], ["short", "SHORT"]].map(([k, l]) => <Btn key={k} small active={filter === k} onClick={() => setFilter(k)}>{l}</Btn>)}
         </div>
-        {fc.length > 0 && <div style={{ display: "flex", gap: 4, alignItems: "center" }} title="filter by directional forecast (independent of the trade action)">
+        {hasFc && <div style={{ display: "flex", gap: 4, alignItems: "center" }} title="filter by directional forecast (independent of the trade action)">
           <span style={{ fontFamily: MONO, fontSize: 8.5, color: C.dim, letterSpacing: 1 }}>FCST</span>
           <Btn small active={fdir === "all"} onClick={() => setFdir("all")}>ANY</Btn>
           <Btn small active={fdir === "UP"} color={C.up} onClick={() => setFdir(v => (v === "UP" ? "all" : "UP"))}>▲ UP</Btn>
