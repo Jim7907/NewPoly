@@ -114,13 +114,13 @@ function snapshot() {
   const positions = db.openPositions().map(p => {
     const mark = lastPrice.get(p.assetId) ?? p.entry;
     const upnl = dirOf(p) * (mark - p.entry) * p.qty;
-    return { ...p, mark, value: p.costUsd + upnl, upnl, upnlPct: upnl / p.costUsd };
+    return { ...p, side: p.direction, price: mark, mark, value: p.costUsd + upnl, upnl, upnlPct: upnl / p.costUsd };
   });
   const eq = cash + positions.reduce((s, p) => s + p.value, 0);
-  const trades = db.closedTrades(500);
+  const trades = db.closedTrades(500).map(t => ({ ...t, side: t.direction }));
   const wins = trades.filter(t => t.pnl > 0), losses = trades.filter(t => t.pnl <= 0);
   const sum = (a) => a.reduce((s, t) => s + (t.pnl || 0), 0);
-  const curve = db.equityCurve();
+  const curve = db.equityCurve().map(pt => ({ ...pt, t: pt.ts, v: pt.equity }));
   const rets = [];
   for (let i = 1; i < curve.length; i++) if (curve[i - 1].equity > 0) rets.push(curve[i].equity / curve[i - 1].equity - 1);
   const mean = rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : 0;
@@ -129,7 +129,7 @@ function snapshot() {
   for (const pt of curve) { peak = Math.max(peak, pt.equity); maxDD = Math.max(maxDD, 1 - pt.equity / peak); }
   const start = db.num("start_equity", cfg.PAPER_BALANCE);
   return {
-    equity: eq, cash, startEquity: start, returnPct: eq / start - 1, drawdown: drawdown(),
+    equity: eq, cash, startEquity: start, startingEquity: start, returnPct: eq / start - 1, drawdown: drawdown(),
     breaker: drawdown() >= cfg.MAX_DRAWDOWN, positions, trades, equityCurve: curve,
     stats: {
       nTrades: trades.length, winRate: trades.length ? wins.length / trades.length : null,

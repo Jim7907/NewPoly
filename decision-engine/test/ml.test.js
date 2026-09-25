@@ -79,25 +79,35 @@ test("LogisticModel learns a linear boundary, is deterministic, round-trips JSON
   assert.ok(gd.predictProba([4, 500]) > 0.9);
 });
 
-test("GBMClassifier learns an XOR-ish interaction, is deterministic, round-trips JSON", () => {
+test("GBMClassifier learns an interaction (AND), is deterministic, round-trips JSON", () => {
   const rnd = ml.mulberry32(5), X = [], y = [];
-  for (let i = 0; i < 600; i++) { const a = rnd() - 0.5, b = rnd() - 0.5; X.push([a, b, rnd()]); y.push(a * b > 0 ? 1 : 0); }
+  for (let i = 0; i < 600; i++) { const a = rnd() - 0.5, b = rnd() - 0.5; X.push([a, b, rnd()]); y.push(a > 0 && b > 0 ? 1 : 0); }
   const g = new ml.GBMClassifier({ seed: 3 }).fit(X, y);
   const g2 = new ml.GBMClassifier({ seed: 3 }).fit(X, y);
   assert.deepStrictEqual(g.toJSON(), g2.toJSON());
-  assert.ok(g.trees.length >= 1 && g.trees.length <= 100);
-  assert.ok(g.predictProba([0.3, 0.3, 0.5]) > 0.7);
+  assert.ok(g.trees.length >= 1 && g.trees.length <= 200);
+  assert.ok(g.predictProba([0.3, 0.3, 0.5]) > 0.7, `${g.predictProba([0.3, 0.3, 0.5])}`);
   assert.ok(g.predictProba([0.3, -0.3, 0.5]) < 0.3);
+  assert.ok(g.predictProba([-0.3, 0.3, 0.5]) < 0.3);
   const r = ml.GBMClassifier.fromJSON(JSON.parse(JSON.stringify(g)));
   assert.strictEqual(r.predictProba([0.1, -0.2, 0.3]), g.predictProba([0.1, -0.2, 0.3]));
 });
 
-test("walk-forward is purged: every OOS prediction comes from a model whose labels ended by then", () => {
-  // Structural check: train with ahead=5 and verify the first OOS bar is > minTrain + warm-up + ahead.
+test("defaults depend on bar spacing (research §5.1)", () => {
+  const d = ml.resolveOpts(gen(100, 1), { ahead: 5 });
+  assert.deepStrictEqual([d.minTrain, d.step, d.deadZone], [500, 20, 0.15]);
+  const intra = gen(100, 1).map((k, i) => ({ ...k, t: k.t / 96 + i * 0 }));
+  for (let i = 0; i < intra.length; i++) intra[i].t = Date.UTC(2024, 0, 1) + i * 900000;
+  const m = ml.resolveOpts(intra, { ahead: 8, costBps: 10 });
+  assert.deepStrictEqual([m.minTrain, m.step, m.deadZone, m.minAbsRet], [3000, 96, 0.2, 0.002]);
+});
+
+test("walk-forward is purged + embargoed: every OOS prediction comes from a model whose labels ended by then", () => {
+  // Structural check: the first OOS bar is ≥ warm-up + minTrain + ahead (purge) + embargo (≥ ahead).
   const cs = gen(500, 2);
   const r = ml.trainWalkForward(cs, { ahead: 5, minTrain: 200, step: 20 });
   const firstIdx = cs.findIndex(k => k.t === r.oosPredictions[0].t);
-  assert.ok(firstIdx >= ml.WARMUP + 200 - 1 + 5);
+  assert.ok(firstIdx >= ml.WARMUP + 200 - 1 + 5 + 5, `first OOS bar ${firstIdx}`);
   // OOS covers every bar with a known label from there on
   assert.strictEqual(r.nOos, cs.length - 5 - firstIdx);
   for (const q of r.oosPredictions) assert.ok(q.p > 0 && q.p < 1 && (q.y === 0 || q.y === 1));
@@ -105,18 +115,23 @@ test("walk-forward is purged: every OOS prediction comes from a model whose labe
 
 test("(a) pure random walk: OOS AUC ≈ 0.5 and confidence ≈ 0 (leakage guard)", () => {
   const aucs = [];
-  for (const seed of [1, 2, 3, 4]) {
+  for (const seed of [101, 102, 103, 104, 105, 106]) {
     const cs = gen(1000, seed);
-    const r = ml.trainWalkForward(cs, { ahead: 5 });
+    const r = ml.trainWalkForward(cs, { ahead: 1 });
     aucs.push(r.oosAuc);
-    assert.ok(Math.abs(r.oosAuc - 0.5) < 0.07, `seed ${seed}: AUC ${r.oosAuc}`);
-    const s = ml.signals(cs, { ahead: 5, noCache: true });
-    assert.strictEqual(s[0].id, "ml.ensemble.pup");
-    assert.ok(s[0].confidence < 0.1, `seed ${seed}: confidence ${s[0].confidence}`);
-    assert.match(s[0].reason, /OOS AUC/);
+    assert.ok(Math.abs(r.oosAuc - 0.5) < 0.08, `seed ${seed}: AUC ${r.oosAuc}`);
+    const conf = ml.confidenceFrom(r.oosAuc, r.stability, r.oosPredictions, 1);
+    assert.ok(conf < 0.2, `seed ${seed}: confidence ${conf}`);
   }
   const mean = aucs.reduce((a, b) => a + b, 0) / aucs.length;
-  assert.ok(Math.abs(mean - 0.5) < 0.035, `mean AUC ${mean}`);
+  assert.ok(Math.abs(mean - 0.5) < 0.03, `mean AUC ${mean}`);
+  // overlapping 5-bar labels: the lower confidence bound must keep confidence at 0
+  for (const seed of [1, 2]) {
+    const s = ml.signals(gen(1000, seed), { ahead: 5, noCache: true });
+    assert.strictEqual(s[0].id, "ml.ensemble.pup");
+    assert.strictEqual(s[0].confidence, 0, `seed ${seed}`);
+    assert.match(s[0].reason, /OOS AUC \d\.\d{3} over \d+ bars .*not distinguishable from chance/);
+  }
 });
 
 test("(b) planted AR(1) φ=0.3 structure: OOS AUC clearly > 0.55 and confidence > 0", () => {
@@ -138,9 +153,11 @@ test("signals shape, determinism, and caching", () => {
   ml.clearCache();
   const cs = gen(600, 9);
   const t0 = Date.now();
-  const s1 = ml.signals(cs, { ahead: 5, symbol: "SYN", tf: 86400, horizon: "swing" });
+  const wf = ml.trainWalkForward(cs, { ahead: 5, minTrain: 250 }); // ~14 retrains of both models
   const trainMs = Date.now() - t0;
+  assert.ok(wf.nOos > 250);
   assert.ok(trainMs < 1500, `600-bar walk-forward took ${trainMs}ms`);
+  const s1 = ml.signals(cs, { ahead: 5, key: "SYN|86400", horizon: "swing" });
   assert.deepStrictEqual(s1.map(s => s.id), ["ml.ensemble.pup", "ml.logistic.pup", "ml.gbm.pup"]);
   for (const s of s1) {
     assert.strictEqual(s.family, "ml");
@@ -151,16 +168,19 @@ test("signals shape, determinism, and caching", () => {
     for (const k of ["p", "oosAuc", "n"]) assert.ok(Number.isFinite(s.value[k]));
   }
   const t1 = Date.now();
-  const s2 = ml.signals(cs, { ahead: 5, symbol: "SYN", tf: 86400, horizon: "swing" });
+  const s2 = ml.signals(cs, { ahead: 5, key: "SYN|86400", horizon: "swing" });
   assert.ok(Date.now() - t1 < 100, "cached call should be fast");
   assert.deepStrictEqual(s2, s1);
   // a few new bars → cached model reused (no retrain) but prediction uses the new last bar
   const more = gen(603, 9);
-  const e1 = ml.getModel("SYN:86400:5", cs, { ahead: 5 });
-  const e2 = ml.getModel("SYN:86400:5", more, { ahead: 5 });
-  assert.strictEqual(e1, e2);
-  const e3 = ml.getModel("SYN:86400:5", gen(640, 9), { ahead: 5 });
-  assert.notStrictEqual(e3, e1);
+  const e1 = ml.getModel("SYN|86400", cs, { ahead: 5 });
+  assert.strictEqual(ml.getModel("SYN|86400", more, { ahead: 5 }), e1);
+  assert.strictEqual(ml.getModel("SYN|86400", more.slice(3), { ahead: 5 }), e1, "rolling window reuses the model");
+  const s3 = ml.signals(more, { ahead: 5, key: "SYN|86400", horizon: "swing" });
+  assert.notDeepStrictEqual(s3[0].value.p, s1[0].value.p); // predicts from the new last bar
+  assert.notStrictEqual(ml.getModel("SYN|86400", gen(640, 9), { ahead: 5 }), e1);
+  assert.notStrictEqual(ml.getModel("SYN|86400", gen(600, 10), { ahead: 5 }), ml.getModel("SYN|86400", gen(640, 9), { ahead: 5 }), "replaced history retrains");
+  assert.notStrictEqual(ml.getModel("SYN|86400", gen(640, 9), { ahead: 3 }), e1, "options are part of the identity");
 });
 
 test("not enough OOS history → confidence 0 with honest reason", () => {

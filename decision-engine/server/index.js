@@ -146,6 +146,7 @@ app.post("/api/backtest", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get("/api/settings", (req, res) => res.json({ settings: db.getAllSettings(), thresholds: engine.thresholds() }));
 app.post("/api/settings", (req, res) => {
   const allowed = ["min_confidence", "min_prob_edge", "min_agreement", "horizon", "auto_trade", "scan_active", "llm_enabled"];
   for (const [k, v] of Object.entries(req.body || {})) {
