@@ -36,7 +36,10 @@ const ckey = (h, cls) => `${h}|${cls}`;
 function loadState() {
   const w = db.loadModel("weights");
   if (w) learner = WeightLearner.fromJSON(w);
+  // Refit from the stored (pRaw, y) pairs on every boot — cheap, and it keeps the calibrator in
+  // step with the current calibration code; fall back to the saved model if pairs are missing.
   for (const h of Object.keys(cfg.HORIZONS)) for (const cls of CLASSES) {
+    if (refitCalibrator(h, cls, [])) continue;
     const c = db.loadModel(`calib:${ckey(h, cls)}`);
     if (c) { calibrators[ckey(h, cls)] = Calibrator.fromJSON(c.model); calibrators[ckey(h, cls)].baseRate = c.baseRate; }
   }

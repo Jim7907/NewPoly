@@ -74,6 +74,21 @@ function fitIsotonic(pairs) {
       A.sx += B.sx; A.sy += B.sy; A.w += B.w; blocks.pop();
     }
   }
+  // Minimum support per step: PAV happily produces tiny tail blocks (e.g. the 3 highest scores all
+  // happened to win → 100%). Merge any block lighter than minW into its lighter-side neighbour;
+  // merging adjacent monotone blocks keeps the fit monotone.
+  const minW = Math.max(30, Math.floor(0.02 * s.length));
+  for (let changed = true; changed && blocks.length > 1;) {
+    changed = false;
+    for (let i = 0; i < blocks.length; i++) {
+      if (blocks[i].w >= minW) continue;
+      const j = i === 0 ? 1 : i === blocks.length - 1 ? i - 1 : (blocks[i - 1].w <= blocks[i + 1].w ? i - 1 : i + 1);
+      const [a, b2] = j < i ? [blocks[j], blocks[i]] : [blocks[i], blocks[j]];
+      a.sx += b2.sx; a.sy += b2.sy; a.w += b2.w;
+      blocks.splice(j < i ? i : j, 1);
+      changed = true; break;
+    }
+  }
   // blocks with identical centres cannot occur (sorted + pooled), but guard anyway
   const xs = [], ys = [];
   for (const B of blocks) {
@@ -149,6 +164,11 @@ class Calibrator {
     this.n = P.length;
     this.nEff = P.length / this.ahead;
     this.platt = null; this.iso = null; this.wIso = 0;
+    // Support: never extrapolate beyond the 1st–99th percentile of scores seen in training. A live
+    // score outside that range (e.g. extra families pushing pRaw past anything backtested) is
+    // treated as the boundary value rather than trusted to an unfitted region.
+    const sp = P.map(r => r.p).sort((u, v) => u - v);
+    this.support = sp.length >= 100 ? [sp[Math.floor(0.01 * (sp.length - 1))], sp[Math.ceil(0.99 * (sp.length - 1))]] : null;
     const ne = this.nEff;
     if (ne < MIN_N) this.method = "identity-shrink";
     else if (ne < BLEND_N) { this.platt = fitPlatt(P); this.method = "platt"; }
@@ -167,6 +187,7 @@ class Calibrator {
     let x = Number(p);
     if (!Number.isFinite(x)) x = 0.5;
     x = clamp(x, 0, 1);
+    if (this.support) x = clamp(x, this.support[0], this.support[1]);
     let q;
     if (this.method === "identity-shrink") q = 0.5 + SHRINK * (x - 0.5);
     else if (this.method === "isotonic") q = isoApply(this.iso, x);
@@ -183,7 +204,7 @@ class Calibrator {
   reliability() { return JSON.parse(JSON.stringify(this._rel)); }
 
   toJSON() {
-    return { v: 2, method: this.method, n: this.n, nEff: this.nEff, ahead: this.ahead, platt: this.platt, iso: this.iso, wIso: this.wIso, reliability: this._rel };
+    return { v: 2, method: this.method, n: this.n, nEff: this.nEff, ahead: this.ahead, platt: this.platt, iso: this.iso, wIso: this.wIso, support: this.support || null, reliability: this._rel };
   }
 
   static fromJSON(o) {
@@ -196,6 +217,7 @@ class Calibrator {
     c.platt = o.platt && Number.isFinite(o.platt.a) && Number.isFinite(o.platt.b) ? { a: o.platt.a, b: o.platt.b } : null;
     c.iso = o.iso && Array.isArray(o.iso.xs) && Array.isArray(o.iso.ys) ? { xs: o.iso.xs.slice(), ys: o.iso.ys.slice() } : null;
     c.wIso = Number(o.wIso) || 0;
+    c.support = Array.isArray(o.support) && o.support.length === 2 && o.support.every(Number.isFinite) ? o.support.slice() : null;
     // degrade gracefully if parameters are missing/corrupt
     if (c.method === "isotonic" && !c.iso) c.method = c.platt ? "platt" : "identity-shrink";
     if (c.method === "isotonic+platt" && !c.iso) c.method = "platt";

@@ -123,3 +123,15 @@ test("ignores malformed pairs", () => {
   const c = new Calibrator().fit([{ p: NaN, y: 1 }, null, { p: 0.4, y: 2 }, ...overconfident(40), { p: 0.6, y: true }]);
   assert.strictEqual(c.n, 41);
 });
+
+test("no extrapolation: scores beyond training support map to the boundary; tiny tail blocks are merged", () => {
+  const { Calibrator } = require("../server/learning/calibrator");
+  const pairs = [];
+  for (let i = 0; i < 3000; i++) { const p = 0.45 + 0.1 * (i % 100) / 100; pairs.push({ p, y: i % 2 }); }
+  pairs.push({ p: 0.9, y: 1 }, { p: 0.91, y: 1 }, { p: 0.92, y: 1 });   // 3 lucky outliers
+  const c = new Calibrator().fit(pairs, { ahead: 1 });
+  assert.ok(c.apply(0.95) < 0.6, `extrapolated ${c.apply(0.95)}`);
+  assert.ok(Math.abs(c.apply(0.95) - c.apply(c.support[1])) < 1e-9);
+  const c2 = Calibrator.fromJSON(JSON.parse(JSON.stringify(c.toJSON())));
+  assert.equal(c2.apply(0.95), c.apply(0.95));
+});
