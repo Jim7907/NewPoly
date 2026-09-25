@@ -143,6 +143,45 @@ app.post("/api/backtest", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── v2: self-improvement lab + cross-sectional rankings ──
+const brain = require("./brain");
+const lazy = (p) => { try { return require(p); } catch { return null; } };
+const labH = (req) => (cfg.HORIZONS[req.query.horizon || req.body?.horizon] ? (req.query.horizon || req.body.horizon) : engine.currentHorizon());
+
+app.get("/api/lab/status", (req, res) => {
+  const si = lazy("./learning/selfImprove");
+  res.json({ selfImprove: safe(() => si?.status?.(), null), brain: brain.status(), horizon: engine.currentHorizon(), ts: new Date().toISOString() });
+});
+app.get("/api/lab/cycles", (req, res) => res.json({ horizon: labH(req), cycles: db.loadModel(`cycles:${labH(req)}`) || [] }));
+app.post("/api/lab/run", (req, res) => {
+  const si = lazy("./learning/selfImprove");
+  if (!si?.runCycle) return res.status(503).json({ error: "self-improvement module not available" });
+  const horizon = labH(req);
+  Promise.resolve().then(() => si.runCycle({ horizon, reason: "manual" }))
+    .then(r => { brain.reload(true); broadcast({ type: "lab", event: "cycle", horizon, report: r }); })
+    .catch(e => console.error("[lab] cycle:", e.message));
+  res.json({ started: true, horizon });
+});
+app.get("/api/lab/report-card", (req, res) => {
+  const rc = db.loadModel(`reportcard:${labH(req)}`);
+  res.json(rc || { note: "no report card yet — run a cycle" });
+});
+app.get("/api/lab/registry", (req, res) => {
+  const reg = lazy("./learning/registry");
+  res.json({ horizon: labH(req), history: safe(() => reg?.history?.(labH(req)), []) || [] });
+});
+app.post("/api/lab/rollback", (req, res) => {
+  const reg = lazy("./learning/registry");
+  if (!reg?.rollback) return res.status(503).json({ error: "registry not available" });
+  try { const r = reg.rollback(labH(req), req.body?.kind, req.body?.target); brain.reload(true); res.json({ success: true, result: r }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get("/api/rankings", async (req, res) => {
+  const cls = req.query.class === "crypto" ? "crypto" : "stock";
+  try { res.json(await engine.rankings({ horizon: labH(req), cls })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post("/api/settings", (req, res) => {
   const allowed = ["min_confidence", "min_prob_edge", "min_agreement", "horizon", "auto_trade", "scan_active", "llm_enabled"];
   for (const [k, v] of Object.entries(req.body || {})) {
@@ -202,6 +241,17 @@ async function main() {
       if (q?.price > 0) for (const trade of portfolio.onPrice(a.id, q.price)) broadcast({ type: "trade", trade: { ...trade, event: "close" } });
     }
   }, 30_000);
+
+  // Self-improvement loop (v2): scheduled retrain/evaluate/promote cycles in a worker thread.
+  const si = lazy("./learning/selfImprove");
+  if (si?.schedule && process.env.SELF_IMPROVE !== "false") {
+    try {
+      si.schedule({ everyMs: Number(process.env.SELF_IMPROVE_EVERY_MS) || 6 * 3600e3, horizons: [engine.currentHorizon()],
+        onReport: (r) => { brain.reload(true); broadcast({ type: "lab", event: "cycle", report: r }); } });
+      console.log(" Self-improvement loop: scheduled");
+    } catch (e) { console.error("[lab] schedule failed:", e.message); }
+  }
+  setInterval(() => brain.reload(), 60_000);
 
   // Warm start once per horizon (walk-forward backtests → calibrator + prior weights).
   const h = engine.currentHorizon();

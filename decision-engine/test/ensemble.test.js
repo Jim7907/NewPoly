@@ -302,3 +302,22 @@ test("base-rate guard: a calibrator that only learned drift does not create BUYs
   const d2 = E.decide({ ...base, baseRate: 0.50 });
   assert.ok(d2.edge > 0.06);
 });
+
+test("v2 hooks: stacker probability override and meta-label confidence gate", () => {
+  const sigs = [
+    { id: "tech.trend.ema_stack", family: "technical", score: 0.5, confidence: 0.8, reason: "x" },
+    { id: "regime.trend.state", family: "regime", score: 0.4, confidence: 0.7, reason: "x" },
+  ];
+  const base = { asset: { id: "STOCK:X", symbol: "X", assetClass: "stock" }, signals: sigs, horizon: "swing", price: 100, atr: 3 };
+  const d = E.decide({ ...base, probability: { pUp: 0.66, baseRate: 0.55, source: "stacker", version: 3 } });
+  assert.equal(d.pUp, 0.66);
+  assert.equal(d.model.kind, "stacker");
+  assert.equal(d.model.version, 3);
+  assert.ok(Math.abs(d.edge - 0.11) < 1e-9);
+  const lo = E.decide({ ...base, probability: { pUp: 0.66, baseRate: 0.55 }, meta: { pSuccess: 0.52, threshold: 0.56 } });
+  assert.equal(lo.action, "HOLD");
+  assert.match(lo.abstainReason, /confidence/);
+  const hi = E.decide({ ...base, probability: { pUp: 0.66, baseRate: 0.55 }, meta: { pSuccess: 0.64, threshold: 0.56 } });
+  assert.ok(hi.confidence > 0.6 && hi.confidence <= 0.64);
+  assert.equal(hi.meta.pSuccess, 0.64);
+});

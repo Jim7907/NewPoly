@@ -366,6 +366,11 @@ function decide(input = {}, opts = {}) {
     try { pc = Number(cal.apply(pRaw)); } catch { pc = NaN; }
     if (Number.isFinite(pc)) pUp = pc;
   }
+  // Learned-model override (v2): when the self-improvement loop has promoted a stacked model, it
+  // supplies an already-calibrated P(up) (and its own base rate); pooling still drives the
+  // explanation (drivers / agreement) and stays as the fallback.
+  const prob = a.probability && Number.isFinite(Number(a.probability.pUp)) ? a.probability : null;
+  if (prob && !noEvidence) pUp = Number(prob.pUp);
   pUp = noEvidence ? 0.5 : clamp(pUp, 0.001, 0.999);
   const side = pUp > 0.5 ? 1 : pUp < 0.5 ? -1 : (L >= 0 ? 1 : -1);
   // Informational edge. A calibrator fitted on a period where the asset class mostly rose learns
@@ -373,7 +378,8 @@ function decide(input = {}, opts = {}) {
   // scores a call is therefore the smaller of |pUp − 0.5| (is the bet +EV at all?) and the
   // distance from the class base rate on the traded side (do the signals add anything beyond
   // drift?). Without a base rate (no calibrator) this is plain |pUp − 0.5|.
-  const baseRate = cal.apply && Number.isFinite(Number(a.baseRate)) ? clamp(Number(a.baseRate), 0.3, 0.7) : 0.5;
+  const baseIn = prob && Number.isFinite(Number(prob.baseRate)) ? prob.baseRate : cal.apply ? a.baseRate : null;
+  const baseRate = Number.isFinite(Number(baseIn)) && baseIn !== null ? clamp(Number(baseIn), 0.3, 0.7) : 0.5;
   const edgeVsBase = side > 0 ? pUp - baseRate : baseRate - pUp;
   const edge = Math.max(0, Math.min(Math.abs(pUp - 0.5), edgeVsBase));
 
@@ -398,7 +404,13 @@ function decide(input = {}, opts = {}) {
   const dq = dataQualityOf(a.dataQuality, hz.tf) * (1 - 0.5 * (raw.length ? invalid / raw.length : 0));
   const { confidence: conf0, terms } = confidenceScore({ edge, agreement, coverage, dataQuality: dq,
     regimeClarity: regimeClarity(regime), calibReliability: cal.K, conflict: conflicts.length ? conflicts[0].severity : 0 });
-  const confidence = noEvidence ? 0 : conf0;
+  // Meta-label override (v2, López de Prado): when a promoted meta-labeler is available, confidence
+  // IS its out-of-sample-trained probability that this side's bracket trade ends net-profitable,
+  // lightly discounted for data quality; its own threshold replaces MIN_CONFIDENCE.
+  const meta = a.meta && Number.isFinite(Number(a.meta.pSuccess)) ? { pSuccess: clamp(Number(a.meta.pSuccess), 0, 1),
+    threshold: clamp(fin(Number(a.meta.threshold), 0.55), 0.5, 0.9), version: a.meta.version ?? null } : null;
+  const confidence = noEvidence ? 0 : meta ? clamp(meta.pSuccess * Math.pow(clamp(dq, 0, 1), 0.1), 0, 1) : conf0;
+  if (meta) { th.MIN_CONFIDENCE = meta.threshold + fin(a.thresholds && a.thresholds.DERISK_BUMP, 0); th.STRONG_CONFIDENCE = Math.max(th.STRONG_CONFIDENCE, meta.threshold + 0.1); }
 
   // ---- risk geometry (for the leaning side) ----
   // Held = explicit flag / position, or an open LONG paper position on this asset (db rows).
@@ -449,7 +461,8 @@ function decide(input = {}, opts = {}) {
     let sz = { sizeFrac: 0, sizeUsd: 0, kellyFrac: 0, volTargetFrac: 0, capped: [isSell ? "exit" : "abstain"] };
     if (direction) sz = risk.positionSize({ pUp: pWin, riskReward: tgtAtr / stopAtr, atrPct, annVol, equity, cfg, assetClass: cls,
       openPositions: a.openPositions || [], correlation: a.correlation, stopAtr, horizonBars: H, costFrac,
-      periodsPerYear: ppy, drawdown: a.drawdown, reliability: cal.kelly });
+      periodsPerYear: ppy, drawdown: a.drawdown,
+      reliability: cal.kelly * (meta ? clamp((meta.pSuccess - 0.5) / 0.2, 0, 1) : 1) * clamp(fin(Number(a.sizeMult), 1), 0, 1) });
     const sigmaH = (atrPct / 1.5) * Math.sqrt(H);
     riskPlan = { ...riskPlan, stop: price - pl * stopAtr * atr, target: price + pl * tgtAtr * atr,
       sizeFrac: sz.sizeFrac, sizeUsd: sz.sizeUsd, kellyFrac: sz.kellyFrac, volTargetFrac: sz.volTargetFrac, capped: sz.capped,
@@ -484,6 +497,8 @@ function decide(input = {}, opts = {}) {
       hmmState: regime.hmm ? (regime.hmm.state ?? null) : null } : null,
     families, conflicts, missingFamilies: missing, thresholds: th, crashGuard: !!crashGuard,
     confidenceTerms: Object.fromEntries(Object.entries(terms).map(([k, v]) => [k, round(v, 4)])),
+    model: prob ? { kind: prob.source || "stacker", version: prob.version ?? null, pooledPUp: round(0.5 + PARAMS.UNCAL_SHRINK * (pRaw - 0.5), 4) } : { kind: "pooled", version: null },
+    meta: meta ? { pSuccess: round(meta.pSuccess, 4), threshold: meta.threshold, version: meta.version } : null,
     logOdds: round(L, 4), drivers, against, signals: sigs, abstainReason: fails.length ? fails.join("; ") : null,
   };
   decision.summary = buildSummary(decision, cal);

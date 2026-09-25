@@ -25,6 +25,7 @@ const { Calibrator } = require("./learning/calibrator");
 const { WeightLearner } = require("./learning/weights");
 const analyst = require("./llm/analyst");
 const portfolio = require("./portfolio");
+const brain = require("./brain");
 
 // ── Learned state ──
 const calibrators = {};               // `${horizon}|${assetClass}` -> Calibrator (+ .baseRate)
@@ -89,6 +90,10 @@ function buildSignals(asset, g, horizon, errors) {
   try { regime = regimeMod.detect(g.candles || []); } catch (e) { errors.push(`regime: ${e.message}`); }
   if (regime) out.push(...safe("regime", () => regimeMod.signals(regime), errors));
 
+  // Cross-sectional / relative family (v2): peers come from a per-class cache of recent candles.
+  brain.rememberCandles(asset, hc.tf, g.candles);
+  out.push(...safe("relative", () => brain.relativeSignals(asset, g.candles || [], horizon, hc.tf), errors));
+
   out.push(...safe("ml", () => ml.signals(g.candles || [], { ahead: hc.ahead, key: `${asset.id}|${hc.tf}` }), errors));
 
   if (asset.assetClass === "stock") {
@@ -133,13 +138,29 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
   const atrArr = candles.length > 20 ? ind.atr(candles, 14) : [];
   const atr = atrArr.length ? atrArr.at(-1) : null;
 
+  // v2 model layer: report-card mask → point-in-time row → promoted stacker / meta-labeler.
+  const masked = brain.applyMask(signals, horizon);
+  const atrPct = price > 0 && atr ? atr / price : null;
+  const pit = brain.pitSignals(masked, hc.tf);
+  const pitDecision = ensemble.decide({ asset, signals: pit, regime, horizon, price, atr, candles, now: Date.now() });
+  const row = brain.liveRow(asset, masked, { regime, atrPct, annVol: regime?.annVol ?? null, pRaw: pitDecision.pRaw, tfSec: hc.tf });
+  const preds = brain.predict(horizon, row);
+  const dr = brain.derisk();
+  const th = { ...thresholds(), ...brain.thresholdsOverride(horizon) };
+  if (dr) { th.MIN_CONFIDENCE += dr.minConfidenceBump ?? 0.05; th.DERISK_BUMP = dr.minConfidenceBump ?? 0.05; }
+
   const decision = ensemble.decide({
-    asset, signals, regime, horizon, price, atr, candles,
+    asset, signals: masked, regime, horizon, price, atr, candles,
     weights: learner, calibrator: calibrators[ckey(horizon, asset.assetClass)] || null,
     baseRate: calibrators[ckey(horizon, asset.assetClass)]?.baseRate, now: Date.now(),
-    thresholds: thresholds(), dataQuality: g.dataQuality,
+    thresholds: th, dataQuality: g.dataQuality,
     equity: portfolio.equity(), openPositions: db.openPositions(),
+    probability: preds.probability, meta: preds.meta, sizeMult: dr ? dr.sizeMult ?? 0.5 : 1,
   });
+  decision.pRawPIT = pitDecision.pRaw;
+  if (preds.relative) decision.relative = { ...preds.relative, rank: rankOf(asset, horizon) };
+  if (preds.targetFirst) decision.targetFirst = preds.targetFirst;
+  if (dr) decision.derisk = dr;
   decision.horizonLabel = decision.horizonLabel || hc.label;
   decision.dataQuality = g.dataQuality;
   if (errors.length) decision.analyzerErrors = errors;
@@ -175,6 +196,7 @@ async function resolveDue(nowMs = Date.now()) {
     const r = Math.log(px / d.price);
     const y = r > 0 ? 1 : 0;
     db.resolveDecision(d.id, px, r, y);
+    brain.onResolved({ horizon: d.horizon, p: d.pUp, y, decision: d });
     learner.update(d.votes || [], y, { scale: 1 / H(d.horizon).ahead });
     (byHorizon[ckey(d.horizon, d.assetClass)] ||= []).push({ p: d.pRaw, y });
   }
@@ -208,6 +230,67 @@ async function warmStart({ horizon = currentHorizon(), log = console.log } = {})
   return out;
 }
 
+// ── Cross-sectional rankings (v2) ──
+// Ranks every asset of a class in the research universe by predicted probability of beating its
+// benchmark (promoted yEx stacker), falling back to the relative family's pooled score. Uses only
+// point-in-time families (no per-asset news/fundamental fetches), so it scales to ~50 names.
+const rankCache = new Map();   // `${horizon}|${cls}` -> { ts, rankings }
+function rankOf(asset, horizon) {
+  const r = rankCache.get(`${horizon}|${asset.assetClass}`)?.rankings || [];
+  const i = r.findIndex(x => x.assetId === asset.id);
+  return i >= 0 ? { rank: i + 1, of: r.length } : null;
+}
+function researchUniverse(cls) {
+  const ds = (() => { try { return require("./research/dataset"); } catch { return null; } })();
+  const u = ds?.RESEARCH_UNIVERSE;
+  const list = Array.isArray(u) ? u : (u && (u[cls] || u.assets)) || [];
+  const assets = list.map(x => (typeof x === "string" ? data.resolveAsset?.(x) : x)).filter(a => a && a.assetClass === cls);
+  const seen = new Set(assets.map(a => a.id));
+  for (const a of cfg.ASSETS) if (a.assetClass === cls && !seen.has(a.id)) assets.push(a);
+  return assets;
+}
+async function rankings({ horizon = currentHorizon(), cls = "stock", maxAgeMs = 10 * 60e3 } = {}) {
+  const key = `${horizon}|${cls}`;
+  const hit = rankCache.get(key);
+  if (hit && Date.now() - hit.ts < maxAgeMs) return hit;
+  const hc = H(horizon);
+  const assets = researchUniverse(cls);
+  const series = await Promise.all(assets.map(a => data.candles(a, hc.tf, 400).catch(() => null)));
+  assets.forEach((a, i) => brain.rememberCandles(a, hc.tf, series[i]));
+  const macro = await data.macro().catch(() => null);
+  const out = [];
+  assets.forEach((asset, i) => {
+    const candles = series[i];
+    if (!candles || candles.length < 120) return;
+    const errors = [];
+    const sigs = [];
+    sigs.push(...safe("technical", () => technical.analyze(candles, { horizon, assetClass: asset.assetClass }), errors));
+    let regime = null; try { regime = regimeMod.detect(candles); } catch { /* ignore */ }
+    if (regime) sigs.push(...safe("regime", () => regimeMod.signals(regime), errors));
+    sigs.push(...safe("relative", () => brain.relativeSignals(asset, candles, horizon, hc.tf), errors));
+    if (macro) sigs.push(...safe("macro", () => macroMod.signals(macro, asset), errors));
+    const masked = brain.applyMask(sigs, horizon);
+    const price = candles.at(-1).c;
+    const atrA = ind.atr(candles, 14); const atr = atrA.at(-1);
+    const d0 = ensemble.decide({ asset, signals: masked, regime, horizon, price, atr, candles });
+    const row = brain.liveRow(asset, masked, { regime, atrPct: atr / price, annVol: regime?.annVol ?? null, pRaw: d0.pRaw, tfSec: hc.tf });
+    const preds = brain.predict(horizon, row);
+    const relScore = d0.families?.relative?.score ?? 0;
+    out.push({
+      assetId: asset.id, symbol: asset.symbol, assetClass: asset.assetClass, price,
+      pOutperform: preds.relative?.pOutperform ?? null, relScore,
+      model: preds.relative ? { kind: "stacker", version: preds.relative.version } : { kind: "relative-family", version: null },
+      pUp: preds.probability?.pUp ?? d0.pUp, action: d0.action, regime: regime?.label || null,
+      drivers: d0.drivers.slice(0, 2).map(x => x.reason),
+    });
+  });
+  out.sort((a, b) => (b.pOutperform ?? 0.5 + b.relScore / 10) - (a.pOutperform ?? 0.5 + a.relScore / 10));
+  out.forEach((x, i) => { x.rank = i + 1; });
+  const res = { ts: Date.now(), horizon, cls, rankings: out };
+  rankCache.set(key, res);
+  return res;
+}
+
 const perfReport = () => {
   const res = db.resolvedDecisions(5000);
   const byAction = {};
@@ -238,5 +321,5 @@ const perfReport = () => {
   };
 };
 
-module.exports = { evaluate, buildSignals, maybeLog, resolveDue, warmStart, loadState, perfReport, thresholds, currentHorizon,
+module.exports = { evaluate, buildSignals, maybeLog, resolveDue, warmStart, loadState, perfReport, thresholds, currentHorizon, rankings,
   get learner() { return learner; }, calibrators };
