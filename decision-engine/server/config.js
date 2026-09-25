@@ -35,21 +35,23 @@ const cfg = {
   STOCK_SCAN_MS:  num("STOCK_SCAN_MS", 60000),    // full re-decision per stock
   SLOW_REFRESH_MS: num("SLOW_REFRESH_MS", 30 * 60 * 1000), // fundamentals / macro / news cache TTL
 
+  // Defaults follow docs/RESEARCH.md §5.1.
   // Decision horizons (what "UP" means): forward return over this many bars of the base timeframe.
   HORIZON: str("HORIZON", "swing"),               // "intraday" | "swing" | "position"
 
   // Confidence gating — the engine abstains (HOLD) unless all of these clear.
-  MIN_CONFIDENCE: num("MIN_CONFIDENCE", 0.65),    // calibrated confidence in [0,1]
-  MIN_PROB_EDGE:  num("MIN_PROB_EDGE", 0.06),     // |P(up) - 0.5| minimum
-  MIN_AGREEMENT:  num("MIN_AGREEMENT", 0.55),     // share of weighted evidence on the chosen side
+  MIN_CONFIDENCE: num("MIN_CONFIDENCE", 0.60),    // calibrated confidence in [0,1]
+  MIN_PROB_EDGE:  num("MIN_PROB_EDGE", 0.04),     // |P(up) - 0.5| minimum
+  MIN_AGREEMENT:  num("MIN_AGREEMENT", 0.60),     // share of weighted evidence on the chosen side
   STRONG_CONFIDENCE: num("STRONG_CONFIDENCE", 0.80),
 
   // Risk / sizing (paper portfolio).
   PAPER_BALANCE: num("PAPER_BALANCE", 100000),
   KELLY_K:       num("KELLY_K", 0.25),            // fractional Kelly
-  MAX_POS_FRAC:  num("MAX_POS_FRAC", 0.10),       // per-position cap (fraction of equity)
+  MAX_POS_FRAC:  num("MAX_POS_FRAC", 0.10),       // per-position cap, stocks (fraction of equity)
+  MAX_POS_FRAC_CRYPTO: num("MAX_POS_FRAC_CRYPTO", 0.05), // per-position cap, crypto (higher vol, correlated)
   MAX_GROSS:     num("MAX_GROSS", 1.0),           // gross exposure cap
-  TARGET_VOL:    num("TARGET_VOL", 0.15),         // annualized vol target per position
+  TARGET_VOL:    num("TARGET_VOL", 0.12),         // annualized vol target per position
   MAX_DRAWDOWN:  num("MAX_DRAWDOWN", 0.15),       // circuit breaker: halt new entries
   STOP_ATR:      num("STOP_ATR", 2.0),
   TARGET_ATR:    num("TARGET_ATR", 3.0),
@@ -58,7 +60,7 @@ const cfg = {
   SLIPPAGE_BPS:   num("SLIPPAGE_BPS", 5),
 
   // Online learning of signal weights (Hedge / multiplicative weights).
-  LEARN_RATE:    num("LEARN_RATE", 0.10),
+  LEARN_RATE:    num("LEARN_RATE", 0.05),
 
   // Optional LLM analyst (Claude). Off unless a key is present.
   ANTHROPIC_API_KEY: str("ANTHROPIC_API_KEY", null),
@@ -78,9 +80,9 @@ const cfg = {
 // Horizon presets: base timeframe (bar interval, seconds), bars ahead that define the label,
 // and how many bars of history each analysis pass loads.
 cfg.HORIZONS = {
-  intraday: { tf: 900,   ahead: 8,  history: 500, label: "2h"  },   // 15m bars, 2h ahead
-  swing:    { tf: 86400, ahead: 5,  history: 400, label: "5d"  },   // daily bars, 1 week ahead
-  position: { tf: 86400, ahead: 20, history: 600, label: "20d" },   // daily bars, ~1 month ahead
+  intraday: { tf: 900,   ahead: 8,  history: 3500, label: "2h"  },   // 15m bars, 2h ahead
+  swing:    { tf: 86400, ahead: 5,  history: 1000, label: "5d"  },   // daily bars, 1 week ahead
+  position: { tf: 86400, ahead: 20, history: 1500, label: "20d" },   // daily bars, ~1 month ahead
 };
 
 module.exports = cfg;

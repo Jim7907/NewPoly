@@ -46,7 +46,7 @@ function refitCalibrator(horizon, newPairs = []) {
   db.saveModel(key, pairs);
   if (pairs.length < 30) return null;
   const c = new Calibrator();
-  c.fit(pairs);
+  c.fit(pairs, { ahead: H(horizon).ahead });
   calibrators[horizon] = c;
   db.saveModel(`calib:${horizon}`, c.toJSON());
   return c;
@@ -139,7 +139,9 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
 // ── Sampling for learning ──
 // Snapshots are logged at most once per sampling interval per asset (or on an action change) so the
 // learner isn't flooded with near-duplicate, heavily-overlapping samples.
-const SAMPLE_MS = { intraday: 15 * 60e3, swing: 4 * 3600e3, position: 12 * 3600e3 };
+// One sample per base bar: labels of consecutive samples still overlap (ahead bars), so the learner
+// scales each update by 1/ahead (docs/RESEARCH.md §5.2 #4).
+const SAMPLE_MS = { intraday: 15 * 60e3, swing: 24 * 3600e3, position: 24 * 3600e3 };
 function maybeLog(decision) {
   const last = db.lastDecisionTs(decision.assetId, decision.horizon);
   const due = !last || Date.now() - new Date(last.ts).getTime() >= (SAMPLE_MS[decision.horizon] || 3600e3) || last.action !== decision.action;
@@ -160,7 +162,7 @@ async function resolveDue(nowMs = Date.now()) {
     const r = Math.log(px / d.price);
     const y = r > 0 ? 1 : 0;
     db.resolveDecision(d.id, px, r, y);
-    learner.update(d.votes || [], y);
+    learner.update(d.votes || [], y, { scale: 1 / H(d.horizon).ahead });
     (byHorizon[d.horizon] ||= []).push({ p: d.pRaw, y });
   }
   db.saveModel("weights", learner.toJSON());
