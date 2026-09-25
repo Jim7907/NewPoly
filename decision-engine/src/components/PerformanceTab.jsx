@@ -63,11 +63,13 @@ export function wilson(h, n, z = 1.96) {
   const p = h / n, d = 1 + (z * z) / n, c = (p + (z * z) / (2 * n)) / d, m = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / d;
   return [Math.max(0, c - m), Math.min(1, c + m)];
 }
-const rateOf = (o) => {
+// `div` > 1 = overlapping labels (horizon > 1 bar): the CI uses n_eff = n / div.
+const rateOf = (o, div = 1) => {
   const x = obj(o); const n = num(x.n); const hits = num(x.hits);
   const hitRate = fr(x.hitRate ?? x.hit) ?? (n && hits != null ? hits / n : null);
-  const ci = Array.isArray(x.ci95) && x.ci95.length === 2 && num(x.ci95[0]) != null ? x.ci95.map(fr)
-    : n ? wilson(hits ?? (hitRate != null ? Math.round(hitRate * n) : null), n) : null;
+  const h = hits ?? (hitRate != null && n ? hitRate * n : null);
+  const ci = Array.isArray(x.ci95) && x.ci95.length === 2 && num(x.ci95[0]) != null && num(x.ci95[1]) != null ? x.ci95.map(fr)
+    : n && h != null ? wilson(h / div, n / div) : null;
   return { n, hits, hitRate, ci, baseRate: fr(x.baseRate), lift: fr(x.lift) };
 };
 const bucketLo = (k) => { const m = /(\d+(?:\.\d+)?)/.exec(String(k)); return m ? Number(m[1]) : Infinity; };
@@ -116,22 +118,21 @@ const Legend = ({ ci = true, base = true, baseLabel = "base rate" }) => (
     <span><span style={{ color: C.sub }}>│</span> 50% coin flip</span>
     {base && <span><span style={{ color: C.warn }}>┃</span> {baseLabel}</span>}
     {ci && <span><span style={{ color: C.text }}>─</span> 95% CI</span>}
-    <span><span style={{ color: C.up }}>■</span> beats base <span style={{ color: C.amber }}>■</span> &gt;50% but ≤ base <span style={{ color: C.down }}>■</span> &lt;50%</span>
+    <span><span style={{ color: C.up }}>■</span> ≥ base <span style={{ color: C.amber }}>■</span> &lt; base, ≥ 50% <span style={{ color: C.down }}>■</span> &lt; base and &lt; 50%</span>
   </div>
 );
 
-function HistCell({ c }) {
-  const r = rateOf(c);
+function HistCell({ c, div, dom }) {
+  const r = rateOf(c, div);
   if (!r.n) return <div style={{ fontFamily: MONO, fontSize: 9.5, color: C.faint }}>—</div>;
   const thin = r.n < 30;
   const lift = r.lift ?? (r.hitRate != null && r.baseRate != null ? r.hitRate - r.baseRate : null);
-  const dom = Math.min(0.5, Math.max(0.12, ...[r.hitRate, r.baseRate].filter(v => v != null).map(v => Math.abs(v - 0.5))) * 1.25);
   return (
     <div style={{ minWidth: 0, opacity: thin ? 0.5 : 1 }} title={`hit ${pct(r.hitRate, 1)} vs base ${pct(r.baseRate, 1)} · lift ${ppFmt(lift)} · n=${r.n}${r.ci ? ` · 95% CI ${pct(r.ci[0], 1)}–${pct(r.ci[1], 1)} (n_eff)` : ""}${thin ? " · n < 30: not used for live track records" : ""}`}>
       <RateBar v={r.hitRate} base={r.baseRate} ci={r.ci} dom={dom} h={6} />
       <div style={{ display: "flex", gap: 6, fontFamily: MONO, fontSize: 9.5, marginTop: 3, flexWrap: "wrap", alignItems: "baseline" }}>
         <b style={{ color: C.text }}>{pct(r.hitRate, 1)}</b>
-        <span style={{ color: C.dim }}>vs {pct(r.baseRate, 0)}</span>
+        <span style={{ color: C.dim }}>vs {pct(r.baseRate, 1)}</span>
         <span style={{ color: lift == null ? C.dim : lift > 0 ? C.up : C.amber }}>{ppFmt(lift)}</span>
         <span style={{ color: C.dim, marginLeft: "auto" }}>n {r.n >= 1e4 ? (r.n / 1000).toFixed(1) + "k" : r.n.toLocaleString("en-US")}</span>
       </div>
@@ -148,6 +149,10 @@ function HistoricalTable({ hist }) {
     : [...new Set(classes.flatMap(c => Object.values(obj(table[c])).flatMap(t => Object.keys(obj(t)))))].filter(k => k !== "all").sort((a, b) => bucketLo(a) - bucketLo(b));
   const dirs = ["UP", "DOWN"];
   const baseRates = obj(h.baseRates);
+  const div = Math.max(1, num(h.ahead) ?? 1);
+  // One scale for every cell so bars are comparable across classes, directions and buckets.
+  const dom = domOf(classes.flatMap(cls => Object.values(obj(table[cls])).flatMap(t => Object.values(obj(t))))
+    .map(c => rateOf(c, div)).filter(r => r.n >= 30).map(r => ({ hitRate: r.hitRate, base: r.baseRate, ci: r.ci })));
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 10 }}>
       {classes.map(cls => {
@@ -166,7 +171,7 @@ function HistoricalTable({ hist }) {
               {keys.map(k => (
                 <React.Fragment key={k}>
                   <span style={{ fontFamily: MONO, fontSize: 10, color: k === "all" ? C.text : C.sub, fontWeight: k === "all" ? 800 : 400 }}>{k === "all" ? "ALL" : k}</span>
-                  {dirs.map(d => <HistCell key={d} c={obj(t[d])[k]} />)}
+                  {dirs.map(d => <HistCell key={d} c={obj(t[d])[k]} div={div} dom={dom} />)}
                 </React.Fragment>
               ))}
             </div>

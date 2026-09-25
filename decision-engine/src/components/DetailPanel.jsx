@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { C, MONO, FAMILIES, Chip, Tag, Panel, Stat, DivBar, MeterBar, Loading, ErrorBox, Empty, Table, Btn, inputStyle,
   api, num, pct, spct, fx, snum, fprice, usd, ago, dt, arr, obj, colorSign, isActionable, isBearish, divColor, actionMeta } from "./ui.jsx";
-import { CandleChart, Gauge, HistorySpark, FamilyStrip } from "./charts.jsx";
+import { CandleChart, Gauge, HistorySpark, FamilyStrip, useMeasure } from "./charts.jsx";
 import { regimeLabel, getForecast, DirBadge, StrengthPips, AlignBar, RateBar } from "./DecisionBoard.jsx";
 
 const tfFor = (h) => (h === "intraday" ? 900 : 86400);
@@ -169,16 +169,22 @@ function ReasonList({ title, items, color, sigMap }) {
   );
 }
 
+// The track record is looked up with the point-in-time subset's alignment, which can differ from the live one.
+const bucketMismatch = (bucket, a) => { const m = /(\d+)\D+(\d+)/.exec(String(bucket)); const x = num(a); if (!m || x == null) return false; const v = x * 100; return v < +m[1] || v >= +m[2] + (+m[2] >= 100 ? 1 : 0); };
+
 function ForecastBox({ d }) {
   const f = getForecast(d);
   const sigMap = useMemo(() => { const m = {}; for (const s of arr(d?.signals)) if (s?.id) m[s.id] = s; return m; }, [d]);
-  if (!f) return null;
+  const [ref, W] = useMeasure();
+  if (!f) return <div ref={ref} style={{ display: "none" }} />;
+  const narrow = W > 0 && W < 440;
   const act = isActionable(d.action);
   const h = f.hist;
+  const hasCI = !!(h && h.ci95 && h.ci95[0] != null && h.ci95[1] != null);
   const actLabel = actionMeta(d.action).label;
   const pSigDir = f.pSignal == null ? null : f.up ? f.pSignal : 1 - f.pSignal;
   const pd = f.pDirection;
-  const pdNote = pd == null ? null : pd < 0.5 ? "below 50% — calibration does not back this direction" : pd < 0.52 ? "≈ coin flip once calibrated" : "calibrated";
+  const pdNote = pd == null ? null : pd < 0.5 ? "< 50% once calibrated" : pd < 0.52 ? "≈ coin flip once calibrated" : "calibrated";
   const why = !act
     ? `Direction is the signals' consensus; the trade action stays ${actLabel} until the confidence/edge gates clear.`
     : f.agrees === false ? `Direction is the signals' consensus; the trade action (${actLabel}) comes from the gated decision and risk rules, so the two can differ.` : null;
@@ -186,24 +192,27 @@ function ForecastBox({ d }) {
     : f.agrees === true ? <Tag color={C.up}>✓ agrees with {actLabel}</Tag>
     : f.agrees === false ? <Tag color={C.amber}>≠ differs from {actLabel}</Tag> : null;
   return (
+    <div ref={ref}>
     <Panel title="Forecast" pad={12} right={relTag} style={{ borderColor: f.col + "55", background: `linear-gradient(180deg, ${f.up ? "#08170e" : "#190b09"}, ${C.panel} 70%)` }}>
-      <div style={{ display: "flex", gap: 14, alignItems: "stretch", flexWrap: "wrap" }}>
-        <div style={{ flex: "none", width: 104, textAlign: "center", padding: "8px 6px", border: `1px solid ${f.col}66`, background: f.up ? C.upBg : C.downBg, borderRadius: 10, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 3 }}>
-          <div style={{ fontSize: 34, lineHeight: 1, color: f.col }}>{f.up ? "▲" : "▼"}</div>
+      <div style={{ display: "flex", gap: narrow ? 10 : 14, alignItems: "stretch", flexWrap: "wrap" }}>
+        <div style={{ flex: narrow ? "1 1 100%" : "none", width: narrow ? "auto" : 104, textAlign: "center", padding: narrow ? "6px 12px" : "8px 6px", border: `1px solid ${f.col}66`, background: f.up ? C.upBg : C.downBg, borderRadius: 10, display: "flex", flexDirection: narrow ? "row" : "column", justifyContent: "center", alignItems: "center", gap: narrow ? 10 : 3 }}>
+          <div style={{ fontSize: narrow ? 26 : 34, lineHeight: 1, color: f.col }}>{f.up ? "▲" : "▼"}</div>
           <div style={{ fontFamily: MONO, fontSize: 20, fontWeight: 800, color: f.col, letterSpacing: 1.5 }}>{f.dir}</div>
           {f.strength && <StrengthPips f={f} />}
         </div>
         <div style={{ flex: "1 1 240px", minWidth: 0, display: "grid", gap: 9, alignContent: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Lbl>alignment</Lbl>
-            <div style={{ flex: 1, minWidth: 60 }}><AlignBar f={f} h={9} /></div>
-            <span style={{ fontFamily: MONO, fontSize: 12, fontWeight: 800, color: C.text, width: 38, textAlign: "right" }}>{pct(f.alignment, 0)}</span>
-          </div>
-          <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim, marginTop: -6, paddingLeft: 78 }}>of weighted signal evidence points {f.dir} · tick = 50/50</div>
+          {f.alignment != null && <>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Lbl>alignment</Lbl>
+              <div style={{ flex: 1, minWidth: 60 }}><AlignBar f={f} h={9} /></div>
+              <span style={{ fontFamily: MONO, fontSize: 12, fontWeight: 800, color: C.text, width: 38, textAlign: "right" }}>{pct(f.alignment, 0)}</span>
+            </div>
+            <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim, marginTop: -6, paddingLeft: 78 }}>of weighted signal evidence points {f.dir} · tick = 50/50</div>
+          </>}
           {f.votes && <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}><Lbl>votes</Lbl><VoteBar votes={f.votes} /></div>}
           {(pSigDir != null || pd != null) && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 6 }}>
-            <Stat label={`signals P(${f.dir.toLowerCase()})`} value={pct(pSigDir, 1)} sub={`raw P(up) ${pct(f.pSignal, 1)}`} title="the signals' own, uncalibrated probability" />
-            <Stat label={`calibrated P(${f.dir.toLowerCase()})`} value={pct(pd, 1)} color={pd == null ? C.text : pd < 0.5 ? C.amber : pd >= 0.55 ? f.col : C.sub} sub={pdNote} title="calibrated probability that the stated direction happens over the horizon — shown as is, even when ≈ or < 50%" />
+            {pSigDir != null && <Stat label={`signals P(${f.dir.toLowerCase()})`} value={pct(pSigDir, 1)} sub={`raw P(up) ${pct(f.pSignal, 1)}`} title="the signals' own, uncalibrated probability" />}
+            {pd != null && <Stat label={`calibrated P(${f.dir.toLowerCase()})`} value={pct(pd, 1)} color={pd == null ? C.text : pd < 0.5 ? C.amber : pd >= 0.55 ? f.col : C.sub} sub={pdNote} title="calibrated probability that the stated direction happens over the horizon — shown as is, even when ≈ or < 50%" />}
           </div>}
         </div>
       </div>
@@ -218,14 +227,14 @@ function ForecastBox({ d }) {
             <span style={{ color: C.sub }}>vs base <b style={{ color: C.text }}>{pct(h.baseRate, 1)}</b></span>
             <span style={{ color: C.sub }}>lift <b style={{ color: h.lift == null ? C.text : h.lift > 0 ? C.up : C.amber }}>{h.lift == null ? "—" : (h.lift > 0 ? "+" : "") + (h.lift * 100).toFixed(1) + "pp"}</b></span>
             <span style={{ color: C.sub }}>n <b style={{ color: C.text }}>{h.n != null ? h.n.toLocaleString("en-US") : "—"}</b></span>
-            {h.ci95 && h.ci95[0] != null && <span style={{ color: C.dim }}>95% CI {pct(h.ci95[0], 0)}–{pct(h.ci95[1], 0)}</span>}
+            {hasCI && <span style={{ color: C.dim }}>95% CI {pct(h.ci95[0], 0)}–{pct(h.ci95[1], 0)}</span>}
           </>}
         </div>
-        {h && h.hitRate != null && <div style={{ marginTop: 6 }}><RateBar v={h.hitRate} base={h.baseRate} ci={h.ci95} dom={Math.max(0.12, Math.abs(h.hitRate - 0.5) * 1.3, Math.abs((h.baseRate ?? 0.5) - 0.5) * 1.3)} title={`hit ${pct(h.hitRate, 1)} · base ${pct(h.baseRate, 1)} · centre line = 50%`} /></div>}
+        {h && h.hitRate != null && <div style={{ marginTop: 6 }}><RateBar v={h.hitRate} base={h.baseRate} ci={hasCI ? h.ci95 : null} dom={Math.max(0.12, Math.abs(h.hitRate - 0.5) * 1.3, Math.abs((h.baseRate ?? 0.5) - 0.5) * 1.3)} title={`hit ${pct(h.hitRate, 1)} · base ${pct(h.baseRate, 1)} · centre line = 50%`} /></div>}
         {h && <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim, marginTop: 5, lineHeight: 1.5 }}>
-          {[h.bucket && `bucket ${h.bucket}`, h.horizon, h.assetClass, h.strengthHitRate != null && `${f.strength || "strength"} calls ${pct(h.strengthHitRate, 0)}${h.strengthN ? ` (n=${h.strengthN.toLocaleString("en-US")})` : ""}`].filter(Boolean).join(" · ")}
+          {[h.bucket && `bucket ${h.bucket}${bucketMismatch(h.bucket, f.alignment) ? " (alignment of the point-in-time signal subset)" : ""}`, h.horizon, h.assetClass, h.strengthHitRate != null && `${f.strength || "strength"} calls ${pct(h.strengthHitRate, 0)}${h.strengthN ? ` (n=${h.strengthN.toLocaleString("en-US")})` : ""}`].filter(Boolean).join(" · ")}
           {h.basis && <div style={{ color: C.dim }}>basis: {h.basis}</div>}
-          {h.hitRate != null && <div><span style={{ color: C.warn }}>┃</span> base rate · <span style={{ color: C.sub }}>│</span> 50%{h.ci95 ? " · ─ 95% CI" : ""}</div>}
+          {h.hitRate != null && <div><span style={{ color: C.warn }}>┃</span> base rate · <span style={{ color: C.sub }}>│</span> 50%{hasCI ? " · ─ 95% CI" : ""}</div>}
         </div>}
       </div>
 
@@ -238,6 +247,7 @@ function ForecastBox({ d }) {
       {f.note && <div style={{ marginTop: 6, fontFamily: MONO, fontSize: 10, color: C.amber }}>note: {f.note}</div>}
       {why && <div style={{ marginTop: 8, padding: "5px 9px", border: `1px dashed ${C.borderHi}`, borderRadius: 6, fontFamily: MONO, fontSize: 10.5, color: C.sub }}>ⓘ {why}</div>}
     </Panel>
+    </div>
   );
 }
 

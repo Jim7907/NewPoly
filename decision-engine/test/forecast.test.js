@@ -55,3 +55,14 @@ test("directionTable tallies hits vs base rate per class/direction/alignment buc
   assert.equal(look.bucket, "90-100%");
   assert.ok(look.hitRate > 0.79 && look.lift > 0.2);
 });
+
+test("historical cells carry a valid Wilson CI on n_eff = n/ahead", () => {
+  const rows = [];
+  for (let i = 0; i < 600; i++) rows.push({ assetId: "STOCK:A", symbol: "A", assetClass: "stock", price: 10, atrPct: 0.02,
+    sig: { "tech.trend.ema_stack": [0.8, 0.9] }, lab: { y: i % 5 < 3 ? 1 : 0 } });
+  const t = DS.directionTable({ horizon: "swing", ahead: 5, rows, signalFamily: {} });
+  const c = t.table.stock.UP.all;
+  assert.ok(Array.isArray(c.ci95) && c.ci95.every(Number.isFinite), JSON.stringify(c.ci95));
+  assert.ok(c.ci95[0] < 0.6 && c.ci95[1] > 0.6);
+  assert.ok(c.ci95[1] - c.ci95[0] > 0.15);          // wide: n_eff = 120, not 600
+});

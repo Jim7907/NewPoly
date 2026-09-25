@@ -61,7 +61,7 @@ function directionTable(ds, { decide, maxRows = Infinity } = {}) {
     const out = {};
     for (const [k, v] of Object.entries(o)) {
       const hr = v.n ? v.hits / v.n : null;
-      out[k] = { n: v.n, hits: v.hits, hitRate: r4(hr), baseRate: r4(baseRate), lift: r4(hr - baseRate), ci95: wilson(v.hits, v.n / ahead)?.map(r4) || null };
+      out[k] = { n: v.n, hits: v.hits, hitRate: r4(hr), baseRate: r4(baseRate), lift: r4(hr - baseRate), ci95: wilson(v.hits / ahead, v.n / ahead)?.map(r4) || null };
     }
     return out;
   };

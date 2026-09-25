@@ -128,8 +128,10 @@ function ForecastStrip({ d, f }) {
         <span style={{ fontFamily: MONO, fontSize: 7.5, color: C.dim, letterSpacing: 1.2 }}>FORECAST</span>
         <DirBadge f={f} />
         <StrengthPips f={f} />
-        <div style={{ flex: 1, minWidth: 28 }}><AlignBar f={f} h={5} /></div>
-        <span style={{ fontFamily: MONO, fontSize: 10, color: C.text, whiteSpace: "nowrap" }}><b>{pct(f.alignment, 0)}</b><span style={{ color: C.dim, fontSize: 8.5 }}> aligned</span></span>
+        {f.alignment != null ? <>
+          <div style={{ flex: 1, minWidth: 28 }}><AlignBar f={f} h={5} /></div>
+          <span style={{ fontFamily: MONO, fontSize: 10, color: C.text, whiteSpace: "nowrap" }}><b>{pct(f.alignment, 0)}</b><span style={{ color: C.dim, fontSize: 8.5 }}> aligned</span></span>
+        </> : <span style={{ flex: 1 }} />}
       </div>
       {(h || disagree) && <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3, fontFamily: MONO, fontSize: 9, color: C.dim, minWidth: 0 }}>
         {h && (h.hitRate != null
