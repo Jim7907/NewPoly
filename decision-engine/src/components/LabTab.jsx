@@ -312,8 +312,8 @@ function ChampionCard({ slot, e, onRollback, busy, horizon }) {
       <MetricRow label="log-loss" v={mLL(m)} base={mLLb(m)} d={4} />
       <div style={{ display: "grid", gridTemplateColumns: "54px 1fr", gap: 6, fontFamily: MONO, fontSize: 10.5 }}>
         <span style={{ color: C.dim, fontSize: 9, letterSpacing: 0.8 }}>DM p</span>
-        <span><b style={{ color: dmp == null ? C.dim : dmp < 0.1 ? C.up : C.down }}>{dmp == null ? "—" : dmp < 0.001 ? "<0.001" : dmp.toFixed(3)}</b>
-          <span style={{ color: C.dim }}>{mDmS(m) != null ? ` · stat ${snum(mDmS(m), 2)}` : ""}{dmp != null ? (dmp < 0.1 ? " · significant" : " · n.s.") : ""}</span></span>
+        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}><b style={{ color: dmp == null ? C.dim : dmp < 0.1 ? C.up : C.down }}>{dmp == null ? "—" : dmp < 0.001 ? "<0.001" : dmp.toFixed(3)}</b>
+          <span style={{ color: C.dim }}>{dmp != null ? (dmp < 0.1 ? " · significant" : " · n.s.") : ""}{mDmS(m) != null ? ` · stat ${snum(mDmS(m), 2)}` : ""}</span></span>
       </div>
     </div>
   );
@@ -451,7 +451,7 @@ function LossChart({ points, height = 210 }) {
       <svg width={w} height={height} style={{ display: "block", touchAction: "pan-y" }} onMouseMove={onMove} onMouseLeave={() => setHv(null)}>
         {ticks.map((t, k) => <g key={k}><line x1={padL} x2={w - padR} y1={y(t)} y2={y(t)} stroke="#111823" /><text x={w - padR + 6} y={y(t) + 3} fill={C.dim} fontSize={9} fontFamily={MONO}>{t.toFixed(3)}</text></g>)}
         {LN2 > lo && LN2 < hi && <g><line x1={padL} x2={w - padR} y1={y(LN2)} y2={y(LN2)} stroke={C.sub} strokeDasharray="4 4" opacity={0.7} /><text x={padL + 4} y={y(LN2) - 3} fill={C.sub} fontSize={8.5} fontFamily={MONO}>coin flip ln2</text></g>}
-        {base != null && base > lo && base < hi && Math.abs(base - LN2) > (hi - lo) * 0.05 && <g><line x1={padL} x2={w - padR} y1={y(base)} y2={y(base)} stroke={C.warn} strokeDasharray="4 4" opacity={0.6} /><text x={padL + 4} y={y(base) - 3} fill={C.warn} fontSize={8.5} fontFamily={MONO}>v1 baseline</text></g>}
+        {base != null && base > lo && base < hi && Math.abs(base - LN2) > 0.0002 && <g><line x1={padL} x2={w - padR} y1={y(base)} y2={y(base)} stroke={C.warn} strokeDasharray="4 4" opacity={0.6} /><text x={w - padR - 4} y={y(base) + (base > LN2 ? -3 : 10)} fill={C.warn} fontSize={8.5} textAnchor="end" fontFamily={MONO}>v1 baseline</text></g>}
         {series.map(s => <path key={s.t} d={s.d} stroke={TARGET_COLOR[s.t]} strokeWidth={2} fill="none" strokeLinejoin="round" strokeLinecap="round" />)}
         {series.map(s => s.pts.map((p, k) => p.promoted
           ? <circle key={s.t + k} cx={x(p.i)} cy={y(p.ll)} r={4} fill={TARGET_COLOR[s.t]} stroke={C.panel} strokeWidth={2} />
@@ -492,7 +492,7 @@ function PCCurve({ rows, current, height = 220 }) {
   const curPt = cur == null ? null : pts.reduce((b, r) => (b == null || Math.abs(r.thr - cur) < Math.abs(b.thr - cur) ? r : b), null);
   const d = pts.map((r, i) => `${i ? "L" : "M"}${x(X(r)).toFixed(1)},${y(r.precision).toFixed(1)}`).join("");
   const fx0 = useCov ? x(0.15) : null, fy0 = y(clamp(0.55, ylo, yhi));
-  const ends = [pts[0], pts[pts.length - 1]];
+  const ends = pts.length > 1 ? [pts[0], pts[pts.length - 1]] : [pts[0]];
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <svg width={w} height={height} style={{ display: "block", touchAction: "pan-y" }} onMouseLeave={() => setHv(null)}>
@@ -504,7 +504,7 @@ function PCCurve({ rows, current, height = 220 }) {
         {useCov && 0.55 < yhi && <text x={w - padR - 4} y={padT + 10} fill={C.up} fontSize={8.5} textAnchor="end" fontFamily={MONO} opacity={0.85}>feasible: prec ≥ 55%, cov ≥ 15%</text>}
         <path d={d} stroke={C.blue} strokeWidth={2} fill="none" strokeLinejoin="round" strokeLinecap="round" />
         {pts.map((r, i) => <circle key={i} cx={x(X(r))} cy={y(r.precision)} r={4} fill={C.blue} stroke={C.panel} strokeWidth={2} />)}
-        {ends.filter(r => r !== curPt).map((r, i) => <text key={"e" + i} x={clamp(x(X(r)) + (i ? -6 : 6), padL + 4, w - padR - 4)} y={y(r.precision) - 8} fill={C.sub} fontSize={8.5} textAnchor={i ? "end" : "start"} fontFamily={MONO}>thr {fx(r.thr, 2)}</text>)}
+        {ends.map((r, i) => r === curPt ? null : <text key={"e" + i} x={clamp(x(X(r)) + (i ? -6 : 6), padL + 4, w - padR - 4)} y={i ? y(r.precision) + 16 : y(r.precision) - 8} fill={C.sub} fontSize={8.5} textAnchor={i ? "end" : "start"} fontFamily={MONO}>thr {fx(r.thr, 2)}</text>)}
         {curPt && <g>
           <circle cx={x(X(curPt))} cy={y(curPt.precision)} r={7} fill="none" stroke={C.warn} strokeWidth={2} />
           <text x={clamp(x(X(curPt)), padL + 40, w - padR - 40)} y={clamp(y(curPt.precision) + 18, padT + 10, height - padB - 4)} fill={C.text} fontSize={9} textAnchor="middle" fontFamily={MONO}>live thr {fx(cur, 2)}</text>
@@ -914,7 +914,7 @@ export default function LabTab({ defaultHorizon }) {
 
       {loaded && !nothing && <>
         <Panel title={`Champion models · ${horizon}`} pad={10} right={<span style={{ fontFamily: MONO, fontSize: 9, color: C.dim }}>OOS metrics vs the calibrated v1 baseline, on the same rows · promotion needs DM p &lt; 0.10</span>}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 250px), 1fr))", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${W >= 1760 ? 6 : W >= 900 ? 3 : W >= 560 ? 2 : 1}, minmax(0, 1fr))`, gap: 8 }}>
             {SLOTS.map(sl => <ChampionCard key={sl.key} slot={sl} e={champs[sl.key]} onRollback={onRollback} busy={busy} horizon={horizon} />)}
           </div>
         </Panel>

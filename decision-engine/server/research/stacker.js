@@ -57,7 +57,7 @@
 //
 // MODELS (reusing server/analysis/ml.js — nothing is re-implemented here)
 //  logistic : LogisticModel (Newton, standardized features). Penalty λ = c·n on the summed NLL,
-//             i.e. c per sample; c chosen from l2Grid (default 0.01…1, strong) by an inner purged
+//             i.e. c per sample; c chosen from l2Grid (default 0.03…10, strong) by an inner purged
 //             walk-forward (3 folds, date-strided downsample to ≤ innerMax rows). Among grid points
 //             within innerTol of the best inner log-loss the STRONGEST penalty wins.
 //  gbm      : GBMClassifier depth 2, lr 0.05, ≤ 200 trees, subsample 0.5, λ_leaf 10,
@@ -103,7 +103,7 @@ const DEFAULTS = Object.freeze({
   folds: 5,
   minTrainFrac: 0.3,
   minTrainAbs: 300,
-  l2Grid: [0.01, 0.03, 0.1, 0.3, 1],
+  l2Grid: [0.03, 0.1, 0.3, 1, 3, 10],
   innerFolds: 3,
   innerMax: 6000,
   innerTol: 2e-4,
@@ -963,7 +963,7 @@ function synthDataset(opts = {}) {
   const assets = Array.from({ length: nAssets }, (_, a) => {
     const crypto = a >= nAssets - nCrypto;
     const sym = crypto ? (a === nAssets - nCrypto ? "BTC" : `C${a}`) : a === 0 ? "SPY" : `S${a}`;
-    return { id: `${crypto ? "CRYPTO" : "STOCK"}:${sym}`, cls: crypto ? "crypto" : "stock", sigma: (crypto ? 0.035 : 0.015) * (0.7 + 0.6 * rnd()) };
+    return { id: `${crypto ? "CRYPTO" : "STOCK"}:${sym}`, cls: crypto ? "crypto" : "stock", bench: sym === "SPY" || sym === "BTC", sigma: (crypto ? 0.035 : 0.015) * (0.7 + 0.6 * rnd()) };
   });
   const T = nDates + ahead + 1;
   const t0 = Date.UTC(2021, 0, 4);
@@ -985,7 +985,8 @@ function synthDataset(opts = {}) {
         if (rnd() < 0.05) conf[a][s] = 0.3 + 0.7 * rnd();
       }
       const f = A.cls === "crypto" ? cmkt[d] : mkt[d];
-      daily[a][d] = A.sigma * (Math.sqrt(rho) * f + Math.sqrt(1 - rho) * gauss());
+      // benchmarks (SPY, BTC) ARE their market factor; other assets load rho on it
+      daily[a][d] = A.bench ? A.sigma * f : A.sigma * (Math.sqrt(rho) * f + Math.sqrt(1 - rho) * gauss());
       if (d >= nDates) continue;
       const sig = {};
       ids.forEach((id, s) => {

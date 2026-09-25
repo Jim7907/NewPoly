@@ -135,7 +135,7 @@ function MetaChip({ meta }) {
 }
 const modelTag = (m) => { const o = obj(m); if (!o.kind && o.version == null) return null; const v = o.version == null ? "" : /^v/i.test(String(o.version)) ? ` ${o.version}` : ` v${o.version}`; return `P(up) ← ${o.kind || "model"}${v}`; };
 const relSub = (r) => { const o = obj(r); const rank = o.rank; const n = num(o.nPeers ?? o.n ?? o.of); const b = o.benchmark ? String(o.benchmark).split(":").pop() : null;
-  return rank == null ? (b ? `vs ${b}` : null) : `rank #${rank}${n != null ? `/${n}` : ""}${b ? ` vs ${b}` : ""}`; };
+  return rank == null ? (b ? `vs ${b}` : null) : `#${rank}${n != null ? `/${n}` : ""}${b ? ` vs ${b}` : ""}`; };
 
 export default function DetailPanel({ assetId, seed, provided, live, tick, minConf, onClose, overlay }) {
   const [full, setFull] = useState(provided || null);
