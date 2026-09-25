@@ -16,13 +16,34 @@ const CRYPTO_UNIVERSE = {
   DOGE: { symbol: "DOGE", name: "Dogecoin",  coinbase: "DOGE-USD", kraken: "XDGUSD",  okx: "DOGE-USDT-SWAP", coingecko: "dogecoin",     llama: null },
   AVAX: { symbol: "AVAX", name: "Avalanche", coinbase: "AVAX-USD", kraken: "AVAXUSD", okx: "AVAX-USDT-SWAP", coingecko: "avalanche-2",  llama: "Avalanche" },
   LINK: { symbol: "LINK", name: "Chainlink", coinbase: "LINK-USD", kraken: "LINKUSD", okx: "LINK-USDT-SWAP", coingecko: "chainlink",    llama: null },
+  ADA:  { symbol: "ADA",  name: "Cardano",   coinbase: "ADA-USD",  kraken: "ADAUSD",  okx: "ADA-USDT-SWAP",  coingecko: "cardano",      llama: "Cardano" },
+  LTC:  { symbol: "LTC",  name: "Litecoin",  coinbase: "LTC-USD",  kraken: "LTCUSD",  okx: "LTC-USDT-SWAP",  coingecko: "litecoin",     llama: "Litecoin" },
+  DOT:  { symbol: "DOT",  name: "Polkadot",  coinbase: "DOT-USD",  kraken: "DOTUSD",  okx: "DOT-USDT-SWAP",  coingecko: "polkadot",     llama: "Polkadot" },
+  BCH:  { symbol: "BCH",  name: "Bitcoin Cash", coinbase: "BCH-USD", kraken: "BCHUSD", okx: "BCH-USDT-SWAP", coingecko: "bitcoin-cash", llama: "Bitcoin Cash" },
+  UNI:  { symbol: "UNI",  name: "Uniswap",   coinbase: "UNI-USD",  kraken: "UNIUSD",  okx: "UNI-USDT-SWAP",  coingecko: "uniswap",      llama: null },
+  NEAR: { symbol: "NEAR", name: "NEAR",      coinbase: "NEAR-USD", kraken: "NEARUSD", okx: "NEAR-USDT-SWAP", coingecko: "near",         llama: "Near" },
+  ATOM: { symbol: "ATOM", name: "Cosmos",    coinbase: "ATOM-USD", kraken: "ATOMUSD", okx: "ATOM-USDT-SWAP", coingecko: "cosmos",       llama: "CosmosHub" },
+  AAVE: { symbol: "AAVE", name: "Aave",      coinbase: "AAVE-USD", kraken: "AAVEUSD", okx: "AAVE-USDT-SWAP", coingecko: "aave",         llama: null },
 };
 
-const CRYPTO = list("CRYPTO", "BTC,ETH,SOL,XRP,DOGE").filter(k => CRYPTO_UNIVERSE[k])
+const CRYPTO = list("CRYPTO", "BTC,ETH,SOL,XRP,DOGE,AVAX,LINK,ADA,LTC,DOT,BCH,UNI,NEAR,ATOM,AAVE").filter(k => CRYPTO_UNIVERSE[k])
   .map(k => ({ ...CRYPTO_UNIVERSE[k], assetClass: "crypto", id: `CRYPTO:${k}` }));
 
 // Stocks: any US ticker works (Nasdaq API + SEC EDGAR); these are defaults.
-const STOCKS = list("STOCKS", "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,SPY,QQQ")
+// Default watchlist: ~45 liquid US large caps across all 11 GICS sectors + the index ETFs used as
+// benchmarks. Cross-sectional (relative) signals need a broad peer set to rank against.
+const STOCKS = list("STOCKS", [
+  "AAPL,MSFT,NVDA,AVGO,ORCL,CRM,AMD,ADBE,CSCO,INTC,QCOM,PLTR",   // technology
+  "GOOGL,META,NFLX,DIS",                                          // communication services
+  "AMZN,TSLA,HD,MCD,NKE",                                         // consumer discretionary
+  "WMT,COST,PG,KO,PEP",                                           // consumer staples
+  "JPM,BAC,GS,V,MA",                                              // financials
+  "UNH,LLY,JNJ,MRK,ABBV,TMO",                                     // health care
+  "XOM,CVX",                                                      // energy
+  "CAT,GE,BA,UBER",                                               // industrials
+  "LIN,NEE,AMT",                                                  // materials, utilities, real estate
+  "SPY,QQQ,IWM,DIA",                                              // index ETFs / benchmarks
+].join(","))
   .map(k => ({ symbol: k, name: k, assetClass: "stock", id: `STOCK:${k}`, etf: ["SPY", "QQQ", "IWM", "DIA"].includes(k) }));
 
 const cfg = {
@@ -31,8 +52,8 @@ const cfg = {
   NODE_ENV:    str("NODE_ENV", "development"),
 
   // Real-time loop cadence.
-  CRYPTO_SCAN_MS: num("CRYPTO_SCAN_MS", 15000),   // full re-decision per crypto asset
-  STOCK_SCAN_MS:  num("STOCK_SCAN_MS", 60000),    // full re-decision per stock
+  CRYPTO_SCAN_MS: num("CRYPTO_SCAN_MS", 30000),   // full re-decision per crypto asset
+  STOCK_SCAN_MS:  num("STOCK_SCAN_MS", 180000),   // full re-decision per stock (~50 names → one every ~4 s)
   SLOW_REFRESH_MS: num("SLOW_REFRESH_MS", 30 * 60 * 1000), // fundamentals / macro / news cache TTL
 
   // Defaults follow docs/RESEARCH.md §5.1.
