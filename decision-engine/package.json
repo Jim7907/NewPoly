@@ -11,7 +11,7 @@
     "start": "node server/index.js",
     "backtest": "node server/learning/backtest.js",
     "analyze": "node server/cli.js",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
