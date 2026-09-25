@@ -7,6 +7,10 @@
 //     from peer / benchmark bars with time ≤ t, from macro observations dated ≤ t − 1 day
 //     (publication lag) and from Fear & Greed readings stamped ≤ t. test/dataset.test.js perturbs
 //     the future and asserts rows ≤ i do not move.
+//     relative.js gets the ≤ i window of the asset itself and, by default, the full peer/benchmark
+//     histories plus the cut-off t (the module reads only bars ≤ t and caches prepared series —
+//     its author's fast path); relativeInput "slice" hands over only peer bars ≤ t. Both give
+//     identical rows (tested), and both pass the perturb-the-future test.
 //   * Families: technical (base tf), regime, relative (lazy, optional), macro, fear-greed (crypto).
 //     News / fundamentals / derivatives / microstructure / ML have no point-in-time history here
 //     and are excluded.
@@ -268,7 +272,7 @@ function labelAt(job, k, atr) {
 // A job holds settings and ids only; candles live once per thread in `env.series`
 // ({ id → { asset, candles, times } }) so peers are not copied into every job.
 // job = { assetId, peerIds, benchId, isBenchmark, horizon, tf, ahead, bracket, costRT, lookback,
-//         peerLookback, warmup, stride, regimeEvery, staleMs, ppy, iOffset, kFrom, kTo, relative,
+//         warmup, stride, regimeEvery, staleMs, ppy, iOffset, kFrom, kTo, relative,
 //         expectedFamilies }
 // env = { series, macro, fng, memo: { macro, fng }, relCache }
 function makeEnv(shared) {
@@ -306,13 +310,14 @@ function computeAssetRows(jobIn, env, relMod, onRow) {
   const windowAt = (k) => cs.slice(Math.max(0, k + 1 - job.lookback), k + 1);
   const useRel = !!(relMod && job.relative);
   const relCache = useRel && env.relCache ? env.relCache : null;
+  const relFull = job.relativeInput !== "slice";
+  const peersFull = {};
+  for (const p of job.peers) peersFull[p.symbol] = p.candles;
   if (useRel && relCache && n > 1 && job.kFrom <= job.kTo) {
-    // Prime relative.js's series cache with the full histories: every later call passes windows
-    // that are contiguous sub-ranges of these, which the module reuses (views are bounded by the
-    // window's last bar, so this changes speed, not results — see the point-in-time test).
-    const peers = {};
-    for (const p of job.peers) peers[p.symbol] = p.candles;
-    safe("relativePrime", () => relMod.signals(cs, { peers, benchmark: job.isBenchmark ? cs : job.bench ? job.bench.candles : cs,
+    // Prime relative.js's series cache with the full histories: every later call passes windows /
+    // arrays that are contiguous sub-ranges of these, which the module reuses (its views stop at the
+    // `t` cut-off, so this changes speed, not results — see the point-in-time tests).
+    safe("relativePrime", () => relMod.signals(cs, { peers: peersFull, benchmark: job.isBenchmark ? cs : job.bench ? job.bench.candles : cs,
       assetClass: cls, horizon: job.horizon, symbol: asset.symbol, etf: !!asset.etf, t: cs[n - 1].t, cache: relCache }));
   }
 
@@ -339,17 +344,23 @@ function computeAssetRows(jobIn, env, relMod, onRow) {
     if (cls === "crypto") push(safe("fearGreed", () => fngSignalsAt(ctx, t)));
     if (useRel) {
       push(safe("relative", () => {
-        const peers = {};
-        for (const p of job.peers) {
-          const j = upperBound(p.times, t);                      // peer bars with time ≤ t only
-          if (j < 0 || t - p.times[j] > job.staleMs) continue;
-          peers[p.symbol] = p.candles.slice(Math.max(0, j + 1 - job.peerLookback), j + 1);
-        }
-        let benchmark = null;
+        // Own candles: the ≤ i window, always. Peers / benchmark: by default the full histories plus
+        // the cut-off `t` (relative.js reads only bars ≤ t — its author's recommended fast path,
+        // ~3× cheaper for 50 stock peers); relativeInput "slice" hands over only bars ≤ t instead.
+        let peers = peersFull, benchmark = null;
         if (job.isBenchmark) benchmark = window;
-        else if (job.bench) {
-          const j = upperBound(job.bench.times, t);
-          if (j >= 0 && t - job.bench.times[j] <= job.staleMs) benchmark = job.bench.candles.slice(Math.max(0, j + 1 - job.peerLookback), j + 1);
+        else if (job.bench) benchmark = job.bench.candles;
+        if (!relFull) {
+          peers = {};
+          for (const p of job.peers) {
+            const j = upperBound(p.times, t);                    // peer bars with time ≤ t only
+            if (j < 0 || t - p.times[j] > job.staleMs) continue;
+            peers[p.symbol] = p.candles.slice(0, j + 1);
+          }
+          if (!job.isBenchmark && job.bench) {
+            const j = upperBound(job.bench.times, t);
+            benchmark = j >= 0 && t - job.bench.times[j] <= job.staleMs ? job.bench.candles.slice(0, j + 1) : null;
+          }
         }
         if (!benchmark) return [];
         return relMod.signals(window, { peers, benchmark, assetClass: cls, horizon: job.horizon, symbol: asset.symbol, etf: !!asset.etf, t, cache: relCache });
@@ -421,12 +432,12 @@ function makeSettings(opts, cfg) {
   const lookback = Math.max(80, Math.floor(isNum(opts.lookback) ? opts.lookback : daily ? 520 : 600));
   return {
     horizon, tf, ahead, lookback,
-    peerLookback: Math.max(30, Math.floor(isNum(opts.peerLookback) ? opts.peerLookback : Math.min(lookback, daily ? 420 : lookback))),
     warmup: Math.max(60, Math.floor(isNum(opts.warmup) ? opts.warmup : 260)),
     stride: Math.max(1, Math.floor(isNum(opts.stride) ? opts.stride : 1)),
     regimeEvery: Math.max(1, Math.floor(isNum(opts.regimeEvery) ? opts.regimeEvery : daily ? 5 : 4)),
     bracket: ensemble.BRACKETS[horizon] || ensemble.BRACKETS.swing,
     staleMs: Math.max(4 * tf * 1000, 4 * DAY),
+    relativeInput: opts.relativeInput === "slice" ? "slice" : "full",
   };
 }
 
@@ -450,9 +461,9 @@ function buildJob(S, cfg, a, data, extra) {
   return {
     assetId: a.id, peerIds, benchId: data.has(benchId) ? benchId : null, isBenchmark,
     horizon: S.horizon, tf: S.tf, ahead: S.ahead, bracket: S.bracket, costRT: roundTripCost(cfg, cls),
-    lookback: S.lookback, peerLookback: S.peerLookback, warmup: S.warmup, stride: S.stride, regimeEvery: S.regimeEvery,
+    lookback: S.lookback, warmup: S.warmup, stride: S.stride, regimeEvery: S.regimeEvery,
     staleMs: S.staleMs, ppy: periodsPerYear(S.tf, cls),
-    expectedFamilies: extra.expectedFamilies[cls], relative: extra.relative,
+    expectedFamilies: extra.expectedFamilies[cls], relative: extra.relative, relativeInput: S.relativeInput,
     iOffset: 0, kFrom: S.warmup, kTo: d.candles.length - 1,
   };
 }
@@ -634,8 +645,8 @@ async function resolveInputs(opts, S, assets, cfg, progress, limitOverride) {
 
 /**
  * buildDataset({ horizon, assets, candlesByAsset?, macroHistory?, fearGreedHistory?, stride=1,
- *                lookback, peerLookback, warmup=260, regimeEvery, limit, workers, relative, now,
- *                dropForming=true, onProgress, cfg }) → Promise<Dataset>
+ *                lookback, warmup=260, regimeEvery, limit, workers, relative, now,
+ *                relativeInput="full"|"slice", dropForming=true, onProgress, cfg }) → Promise<Dataset>
  * Missing inputs are fetched (candles via server/data, FRED full history, alternative.me F&G).
  * Pass macroHistory/fearGreedHistory = null to skip those families. `relative`: module override,
  * or null to skip the family. onProgress({ phase, done, total, assetId? }).
@@ -693,7 +704,8 @@ async function buildDataset(opts = {}) {
     universe: assets.map((a) => a.id), benchmarks: { ...BENCHMARKS },
     signalIds: collectSignalIds(rows), signalFamily, rows,
     meta: {
-      stride: S.stride, lookback: S.lookback, peerLookback: S.peerLookback, warmup: S.warmup, regimeEvery: S.regimeEvery,
+      stride: S.stride, lookback: S.lookback, warmup: S.warmup, regimeEvery: S.regimeEvery,
+      relativeInput: S.relativeInput,
       bracket: S.bracket, costsBps: { stock: roundTripCost(cfg, "stock") * 1e4, crypto: roundTripCost(cfg, "crypto") * 1e4 },
       families: plan, relative: !!relMod,
       candles: Object.fromEntries(assets.map((a) => { const c = data.get(a.id).candles; return [a.id, { n: c.length, from: c.length ? c[0].t : null, to: c.length ? c[c.length - 1].t : null }]; })),
@@ -718,8 +730,8 @@ async function updateDataset(ds, opts = {}) {
   // The dataset's own settings win: changing lookback / stride / cadence mid-stream would make
   // new rows inconsistent with old ones.
   const pick = (k) => (m[k] != null ? m[k] : opts[k]);
-  const S = makeSettings({ horizon: ds.horizon, lookback: pick("lookback"), peerLookback: pick("peerLookback"),
-    warmup: pick("warmup"), stride: pick("stride"), regimeEvery: pick("regimeEvery") }, cfg);
+  const S = makeSettings({ horizon: ds.horizon, lookback: pick("lookback"),
+    warmup: pick("warmup"), stride: pick("stride"), regimeEvery: pick("regimeEvery"), relativeInput: pick("relativeInput") }, cfg);
   const tStart = Date.now();
   const assets = uniq([...(ds.universe || []), ...((opts.assets || []).map((a) => toAsset(a) && toAsset(a).id))].filter(Boolean)).map(toAsset);
   const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;

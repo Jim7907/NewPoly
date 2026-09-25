@@ -255,6 +255,17 @@ test("targets: yEx excludes the benchmarks, tbLong trains on net bracket returns
   assert.ok(/not enough/.test(tiny.metrics.reason));
 });
 
+test("mask as a function is evaluated per fold on purged training rows only (no look-ahead selection)", () => {
+  const ds = S.synthDataset({ nAssets: 8, nDates: 300, seed: 6, plant: PLANT });
+  const calls = [];
+  const maskFn = train => { calls.push(Math.max(...train.rows.map(r => r.lab.tEnd))); return { "tech.trend.ema_stack": 0, "rel.xs.mom_rank": 1.5 }; };
+  const r = S.trainStacker(ds, { target: "y", mask: maskFn, model: "logistic", bootstrapReps: 0 });
+  assert.strictEqual(calls.length, r.metrics.folds + 1, "once per fold + once for the final model");
+  r.metrics.perFold.forEach((f, k) => assert.ok(calls[k] < f.testStart, "mask saw only labels that ended before the test block"));
+  assert.ok(!r.spec.signalIds.includes("tech.trend.ema_stack"));
+  assert.strictEqual(r.spec.mask["rel.xs.mom_rank"], 1.5);
+});
+
 test("serialization round-trip: identical calibrated predictions, baseRate and target exposed", () => {
   const r = plantedRun();
   const json = JSON.parse(JSON.stringify(r.model));

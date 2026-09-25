@@ -51,7 +51,10 @@
 //  5. class:<c>       asset-class one-hot ("etf" → "stock").
 //  6. atrPct, annVol  winsorized to the training 1st/99th percentiles; missing → training median.
 //  7. logitPRaw       logit(clamp(pRaw, 0.01, 0.99)); missing → 0.
-//  Mask: when a signalEval mask is given it is stored in the spec and applied in featurize. The
+//  Mask: when a signalEval mask is given it is stored in the spec and applied in featurize.
+//  trainStacker/trainMetaLabeler also accept mask as a FUNCTION (trainingDataset) → mask, evaluated
+//  per fold on purged training rows only — a report card computed on the full dataset would select
+//  features with knowledge of the test period (look-ahead). The
 //  dataset stores RAW confidences; if a live row's confidences were ALREADY multiplied by the mask
 //  set row.masked = true so the mask is not applied twice.
 //
@@ -73,6 +76,9 @@
 //       Cross-sectional correlation (all assets fall together) is therefore absorbed inside a
 //       date, and label overlap across dates by the HAC lag. Harvey–Leybourne–Newbold small-sample
 //       factor, Student-t(T−1) p-values. stat < 0 ⇔ the stacker has LOWER log-loss.
+//  pBaseline = calibrated pRaw; when the fold's calibrator is not reliable (n_eff < 30) the
+//       baseline is the fold's base rate (never the Calibrator's shrink toward 0.5, which would
+//       handicap the baseline whenever the base rate ≠ 0.5).
 //  aucCI = moving-block bootstrap over dates (blocks of 2·ahead dates) for the stacker, the
 //       baseline and their difference.
 //  calibrated = the stacker's probability after the OOS calibrator, evaluated SEQUENTIALLY: fold
@@ -80,7 +86,8 @@
 //
 // FINAL MODEL: refit on all labelled rows; a Calibrator (server/learning/calibrator.js) is fitted
 // on the walk-forward OOS predictions and stored, so Stacker.predict(row) returns a CALIBRATED
-// probability. Calibrator sample size uses n_eff = nDates / ahead (dates, not rows, are the
+// probability (if the OOS history is too short for a reliable calibrator — n_eff < 30 — none is
+// stored, JSON calibrated: false, and predict returns the base-rate-centred model p). Calibrator sample size uses n_eff = nDates / ahead (dates, not rows, are the
 // independent unit of a panel), which keeps it on Platt scaling until there is a lot of history.
 // Deterministic: fixed seeds, no Math.random.
 "use strict";
@@ -729,11 +736,19 @@ function lagInDates(ts, ahead, tf) {
 /**
  * Calibrator on panel pairs [{p, y, t}] with n_eff = nDates / ahead (passed to Calibrator as an
  * effective `ahead` = ahead · rows-per-date). Dates, not rows, are the independent unit.
+ * NOTE: below n_eff 30 the Calibrator is "identity-shrink" (pulls toward 0.5, not toward the base
+ * rate) and reports reliable: false — callers must then fall back to the base rate (see
+ * calibratedOr), never use the shrunk value as an opinion.
  */
 function fitPanelCalibrator(pairs, ahead) {
   const nDates = new Set(pairs.map(q => q.t)).size || 1;
   const effAhead = Math.max(ahead, (ahead * pairs.length) / nDates);
   return new Calibrator().fit(pairs.map(q => ({ p: q.p, y: q.y })), { ahead: effAhead });
+}
+
+/** cal.apply(p) when the calibrator is reliable, otherwise `fallback` (the base rate). */
+function calibratedOr(cal, p, fallback) {
+  return cal && cal.reliable ? cal.apply(p) : fallback;
 }
 
 // ─── the Stacker ─────────────────────────────────────────────────────────────────────────────
@@ -776,7 +791,7 @@ class Stacker {
     return {
       v: 1, type: "stacker", target: this.target, kind: this.kind, spec: this.spec,
       logistic: this.logistic ? this.logistic.toJSON() : null, gbm: this.gbm ? this.gbm.toJSON() : null,
-      baseRate: this.baseRate, calibrator: this.calibrator ? this.calibrator.toJSON() : null, l2c: this.l2c,
+      baseRate: this.baseRate, calibrated: !!this.calibrator, calibrator: this.calibrator ? this.calibrator.toJSON() : null, l2c: this.l2c,
       nTrain: this.nTrain, trainedThrough: this.trainedThrough, horizon: this.horizon, ahead: this.ahead, tf: this.tf,
       summary: this.summary,
     };
@@ -831,7 +846,10 @@ function trainStacker(dataset, opts = {}) {
   const ahead = Math.max(1, Math.floor(opts.ahead || dataset.ahead || 5));
   const purge = opts.purge != null ? opts.purge : ahead;
   const mask = opts.mask || null;
-  const { rows, y: Y, ends } = prepareRows(dataset, target, { ahead: purge, tf });
+  const { rows, y: Y, ends, all, endsAll } = prepareRows(dataset, target, { ahead: purge, tf });
+  // mask may be a function (trainingDataset) → mask, e.g. ds => signalMask(reportCard(ds)); it is
+  // then evaluated per fold on labelled rows whose labels ended before the fold's cutoff only.
+  const maskAt = cutoff => resolveMask(mask, dataset, all, endsAll, cutoff);
   const nDates = new Set(rows.map(r => r.t)).size;
   const embargo = opts.embargo != null ? opts.embargo : Math.max(1, Math.ceil(0.01 * nDates));
   const embargoMs = embargo * tfMs;
@@ -852,7 +870,7 @@ function trainStacker(dataset, opts = {}) {
   for (const f of folds) {
     const tFold = Date.now();
     const trR = f.train.map(k => rows[k]), ytr = f.train.map(k => Y[k]);
-    const spec = makeSpec(trR, { mask, signalIds: dataset.signalIds });
+    const spec = makeSpec(trR, { mask: maskAt(f.cutoff), signalIds: dataset.signalIds });
     const Xtr = trR.map(r => featurize(r, spec));
     const m = fitModel(Xtr, ytr, trR.map(r => r.t), f.train.map(k => ends[k]), mo);
     const base = m.baseRate;
@@ -862,7 +880,7 @@ function trainStacker(dataset, opts = {}) {
       const r = rows[k];
       const pr = predictModel(m, featurize(r, spec));
       const o = {
-        t: r.t, assetId: r.assetId, p: pr.p, y: Y[k], pBaseline: cal.apply(pRawOf(r)), pBase: base,
+        t: r.t, assetId: r.assetId, p: pr.p, y: Y[k], pBaseline: calibratedOr(cal, pRawOf(r), base), pBase: base,
         pLog: pr.pLog, pGbm: pr.pGbm, pRaw: isNum(r.pRaw) ? r.pRaw : null, fold: f.k, tEnd: ends[k], pCal: null,
       };
       oos.push(o); foldPreds.push(o);
@@ -881,6 +899,7 @@ function trainStacker(dataset, opts = {}) {
     const pairs = oos.filter(o => o.fold < b && o.tEnd < folds[b].cutoff);
     if (pairs.length < 100) continue;
     const cal = fitPanelCalibrator(pairs, ahead);
+    if (!cal.reliable) continue;
     for (const o of oos) if (o.fold === b) o.pCal = cal.apply(o.p);
   }
 
@@ -919,10 +938,13 @@ function trainStacker(dataset, opts = {}) {
 
   // ── final model on every labelled row + OOS calibrator ──
   const tFinal = Date.now();
-  const spec = makeSpec(rows, { mask, signalIds: dataset.signalIds });
+  const spec = makeSpec(rows, { mask: maskAt(Infinity), signalIds: dataset.signalIds });
   const X = rows.map(r => featurize(r, spec));
   const fm = fitModel(X, Y, rows.map(r => r.t), ends, mo);
-  const calibrator = fitPanelCalibrator(oos.map(o => ({ p: o.p, y: o.y, t: o.t })), ahead);
+  // too little OOS history for a reliable calibrator → none (predict returns the model p, which
+  // the logistic intercept / GBM base already centre on the training base rate)
+  const cal = fitPanelCalibrator(oos.map(o => ({ p: o.p, y: o.y, t: o.t })), ahead);
+  const calibrator = cal.reliable ? cal : null;
   const trainedThrough = rows.length ? rows[rows.length - 1].t : null;
   const model = new Stacker({
     spec, target, kind, logistic: fm.logistic, gbm: fm.gbm, baseRate: fm.baseRate, calibrator, l2c: fm.l2c, nTrain: rows.length,
@@ -938,6 +960,26 @@ function trainStacker(dataset, opts = {}) {
     metrics, trainedThrough, labelsThrough: ends.reduce((a, v) => (v > a ? v : a), -Infinity), params,
     timing: { ms: Date.now() - started, finalMs: Date.now() - tFinal, foldsMs: perFold.map(f => f.ms) },
   };
+}
+
+/**
+ * A static mask object is used as is (NOTE: a mask built from a report card on the FULL dataset
+ * selects features with knowledge of the OOS period — prefer the function form for evaluation).
+ * A function is called with { ...dataset, rows } restricted to labelled rows whose label ended
+ * before `cutoff` (memoized per cutoff).
+ */
+const MASK_MEMO = new WeakMap();
+function resolveMask(mask, dataset, all, endsAll, cutoff) {
+  if (!mask || typeof mask !== "function") return mask || null;
+  let memo = MASK_MEMO.get(mask);
+  if (!memo) MASK_MEMO.set(mask, (memo = new Map()));
+  const key = `${all.length}|${cutoff}`;
+  if (!memo.has(key)) {
+    const rows = [];
+    for (let k = 0; k < all.length; k++) if (all[k].lab && endsAll[k] < cutoff) rows.push(all[k]);
+    memo.set(key, mask({ ...dataset, rows }) || null);
+  }
+  return memo.get(key);
 }
 
 function roundDm(d) {
@@ -1070,6 +1112,6 @@ module.exports = {
   featurize, makeSpec, trainStacker, Stacker, dieboldMariano, purgedWalkForward,
   // building blocks reused by metaLabel.js / tests / the self-improvement loop
   computeLabelEnds, labelOf, prepareRows, fitModel, predictModel, resolveModelOpts, probMetrics, hacMeanTest,
-  aucBlockBootstrap, lagInDates, fitPanelCalibrator, familyOf, sigPair, sortRows, tCdf, normCdf, synthDataset,
+  aucBlockBootstrap, lagInDates, fitPanelCalibrator, calibratedOr, resolveMask, familyOf, sigPair, sortRows, tCdf, normCdf, synthDataset,
   TARGETS, MODELS, DEFAULTS, FAMILY_PREFIX,
 };

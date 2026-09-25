@@ -135,3 +135,54 @@ test("no extrapolation: scores beyond training support map to the boundary; tiny
   const c2 = Calibrator.fromJSON(JSON.parse(JSON.stringify(c.toJSON())));
   assert.equal(c2.apply(0.95), c.apply(0.95));
 });
+
+// ── Audit regressions (2026-09) ──
+// Persistent score (AR(1), like the pooled pRaw) + overlapping 5-bar labels: PAV blocks have far
+// fewer independent outcomes than their size, so an unshrunk isotonic map invents edges on noise.
+function persistent(n, k, seed, ahead = 5) {
+  const r = rng(seed), g = () => { let u = 0; while (!u) u = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * r()); };
+  const s = [], ret = [];
+  let z = 0;
+  for (let t = 0; t < n + ahead; t++) { z = 0.9 * z + Math.sqrt(0.19) * g(); s.push(z); ret.push(0.0006 + 0.02 * (k * z / Math.sqrt(ahead) + Math.sqrt(1 - k * k) * g())); }
+  const out = [];
+  for (let t = 0; t < n; t++) { let f = 0; for (let j = 1; j <= ahead; j++) f += ret[t + j]; out.push({ p: 1 / (1 + Math.exp(-0.15 * s[t])), y: f > 0 ? 1 : 0 }); }
+  return out;
+}
+
+test("audit: out-of-fold λ shrink removes spurious edges on an uninformative, persistent score", () => {
+  const train = persistent(6000, 0, 21), test = persistent(20000, 0, 22);
+  const c = new Calibrator().fit(train, { ahead: 5 });
+  const base = train.reduce((s, q) => s + q.y, 0) / train.length;
+  assert.ok(c.lambda <= 0.25, `λ=${c.lambda}`);
+  const spurious = test.filter(q => Math.abs(c.apply(q.p) - base) >= 0.04).length / test.length;
+  assert.ok(spurious < 0.01, `share of bars with a fake ≥0.04 edge: ${spurious}`);
+  const rel = c.reliability();
+  assert.ok(rel.oof && Number.isFinite(rel.oof.brier) && Number.isFinite(rel.oof.bss) && rel.oof.n > 1000);
+  assert.strictEqual(rel.lambda, c.lambda);
+  // λ = 0 → the calibrator admits it has no demonstrated skill
+  if (c.lambda === 0) assert.strictEqual(c.reliable, false);
+});
+
+test("audit: an informative score keeps most of its resolution (λ high) and beats the base rate OOS", () => {
+  const train = persistent(15000, 0.15, 31), test = persistent(30000, 0.15, 32);
+  const c = new Calibrator().fit(train, { ahead: 5 });
+  assert.ok(c.lambda >= 0.6, `λ=${c.lambda}`);
+  assert.strictEqual(c.reliable, true);
+  const base = train.reduce((s, q) => s + q.y, 0) / train.length;
+  const bCal = test.reduce((s, q) => s + (c.apply(q.p) - q.y) ** 2, 0) / test.length;
+  const bBase = test.reduce((s, q) => s + (base - q.y) ** 2, 0) / test.length;
+  assert.ok(bCal < bBase, `${bCal} vs base ${bBase}`);
+  // monotone, and λ/base survive serialization
+  let prev = -1;
+  for (let p = 0; p <= 1; p += 0.01) { const q = c.apply(p); assert.ok(q >= prev - 1e-12); prev = q; }
+  const r = Calibrator.fromJSON(JSON.parse(JSON.stringify(c)));
+  for (const p of [0.3, 0.45, 0.5, 0.55, 0.7]) assert.strictEqual(r.apply(p), c.apply(p));
+  assert.strictEqual(r.lambda, c.lambda);
+});
+
+test("audit: pre-audit (v2) serialized calibrators keep their behaviour (λ = 1)", () => {
+  const legacy = { v: 2, method: "platt", n: 500, nEff: 500, ahead: 1, platt: { a: 0.5, b: 0.1 }, iso: null, wIso: 0, support: null };
+  const c = Calibrator.fromJSON(legacy);
+  const expect = 1 / (1 + Math.exp(-(0.5 * Math.log(0.7 / 0.3) + 0.1)));
+  assert.ok(Math.abs(c.apply(0.7) - expect) < 1e-12);
+});

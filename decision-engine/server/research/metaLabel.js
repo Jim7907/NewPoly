@@ -8,6 +8,7 @@
 //  Primary probability p per row, ALWAYS out of sample:
 //    "pooled"  : v1 pRaw calibrated (server/learning/calibrator.js) on the purged training rows of
 //                each walk-forward fold; base = that fold's training base rate of primaryTarget.
+//                A fold whose calibrator is not reliable (n_eff < 30) gives p = base (no call).
 //    "stacker" : the stacker's walk-forward OOS predictions, SEQUENTIALLY calibrated (oos.pCal —
 //                the same calibrated scale Stacker.predict returns live); base = the fold's
 //                training base rate. Pass a trainStacker() result as opts.stacker, or let this
@@ -87,7 +88,8 @@ function pooledPrimary(dataset, { target, ahead, tf, embargoMs, folds, minTrain,
   for (const f of splits) {
     const base = mean(f.train.map(k => y[k]));
     const cal = S.fitPanelCalibrator(f.train.map(k => ({ p: pr(rows[k]), y: y[k], t: rows[k].t })), ahead);
-    for (const k of f.test) out.push({ t: rows[k].t, assetId: rows[k].assetId, p: cal.apply(pr(rows[k])), pBase: base, fold: f.k });
+    // an unreliable calibrator (n_eff < 30) has no opinion: p = base → edge 0 → no trade
+    for (const k of f.test) out.push({ t: rows[k].t, assetId: rows[k].assetId, p: S.calibratedOr(cal, pr(rows[k]), base), pBase: base, fold: f.k });
   }
   return { preds: out, baseRate: y.length ? mean(y) : 0.5 };
 }
@@ -285,7 +287,7 @@ function trainMetaLabeler(dataset, opts = {}) {
   const oos = [], perFold = [];
   for (const f of splits) {
     const trR = f.train.map(k => M.rows[k]);
-    const spec = S.makeSpec(trR, { mask: opts.mask, signalIds: dataset.signalIds });
+    const spec = S.makeSpec(trR, { mask: S.resolveMask(opts.mask, dataset, all, endsAll, f.cutoff), signalIds: dataset.signalIds });
     const X = f.train.map(k => metaFeatures(M.rows[k], M.side[k], Math.abs(M.edge[k]), spec));
     const ytr = f.train.map(k => M.y[k]);
     const m = S.fitModel(X, ytr, trR.map(r => r.t), f.train.map(k => M.ends[k]), mo);
@@ -332,7 +334,7 @@ function trainMetaLabeler(dataset, opts = {}) {
   };
 
   // 5. final model on every meta row
-  const spec = S.makeSpec(M.rows, { mask: opts.mask, signalIds: dataset.signalIds });
+  const spec = S.makeSpec(M.rows, { mask: S.resolveMask(opts.mask, dataset, all, endsAll, Infinity), signalIds: dataset.signalIds });
   const X = M.rows.map((r, k) => metaFeatures(r, M.side[k], Math.abs(M.edge[k]), spec));
   const fm = S.fitModel(X, M.y, M.rows.map(r => r.t), M.ends, mo);
   const model = new MetaLabeler({

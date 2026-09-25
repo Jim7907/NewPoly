@@ -51,27 +51,33 @@ function universe(n) {
   for (let t = t0; t < Date.UTC(2023, 0, 1); t += DAY) fng.push({ t, v: Math.round(50 + 45 * Math.sin(t / (40 * DAY))) });
   return { cb, macro: { vix, hyOas: hy }, fng };
 }
-const BASE = { horizon: "swing", assets: ASSETS, warmup: 200, lookback: 180, peerLookback: 150, regimeEvery: 3, workers: 1 };
+const BASE = { horizon: "swing", assets: ASSETS, warmup: 200, lookback: 180, regimeEvery: 3, workers: 1 };
 const canon = (x) => JSON.stringify(x, (k, v) => (v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.keys(v).sort().map((q) => [q, v[q]])) : v));
 const pit = (r) => canon({ assetId: r.assetId, t: r.t, i: r.i, price: r.price, atrPct: r.atrPct, annVol: r.annVol, regime: r.regime, sig: r.sig, fam: r.fam, pRaw: r.pRaw });
 
-// A stand-in relative analyzer that (a) records any bar it is handed from after `t` and (b) emits
-// signals that depend on the latest peer / benchmark closes, so a leak would move them.
+// A stand-in relative analyzer. Like the real one it honours the cut-off `t` (reads peer /
+// benchmark bars ≤ t only), and it records (a) any own bar after t — never allowed — and (b) how
+// often it was handed peer / benchmark bars after t (expected in the default "full" input mode,
+// zero in "slice" mode). Its signals depend on the latest peer / benchmark closes, so a leak
+// would move them.
 function spyRelative() {
   const leaks = [];
+  const handed = { future: 0, calls: 0 };
   return {
-    leaks,
+    leaks, handed,
     signals(own, { peers, benchmark, assetClass, t }) {
+      handed.calls++;
       const last = own[own.length - 1];
       if (last.t > t) leaks.push(`own ${last.t} > ${t}`);
-      for (const [sym, cs] of Object.entries(peers)) if (cs.length && cs[cs.length - 1].t > t) leaks.push(`${sym} ${cs[cs.length - 1].t} > ${t}`);
-      if (benchmark.length && benchmark[benchmark.length - 1].t > t) leaks.push(`benchmark > ${t}`);
-      const rs = Math.tanh(20 * (Math.log(last.c / own[Math.max(0, own.length - 21)].c) - Math.log(benchmark[benchmark.length - 1].c / benchmark[Math.max(0, benchmark.length - 21)].c)));
-      const peerMean = Object.values(peers).reduce((s, cs) => s + Math.log(cs[cs.length - 1].c / cs[Math.max(0, cs.length - 6)].c), 0) / Math.max(1, Object.keys(peers).length);
+      const cut = (cs) => { const out = cs.filter((c) => c.t <= t); if (out.length < cs.length) handed.future++; return out; };
+      const P = Object.entries(peers).map(([k, cs]) => [k, cut(cs)]).filter(([, cs]) => cs.length > 6);
+      const B = cut(benchmark);
+      const rs = Math.tanh(20 * (Math.log(last.c / own[Math.max(0, own.length - 21)].c) - Math.log(B[B.length - 1].c / B[Math.max(0, B.length - 21)].c)));
+      const peerMean = P.reduce((s, [, cs]) => s + Math.log(cs[cs.length - 1].c / cs[cs.length - 6].c), 0) / Math.max(1, P.length);
       return [
         { id: "rel.rs.1m", family: "relative", score: rs, confidence: 0.5, horizon: "any", value: {}, reason: "" },
-        { id: "rel.xs.peer_mom", family: "relative", score: Math.tanh(10 * peerMean), confidence: 0.4, horizon: "any", value: { assetClass, nPeers: Object.keys(peers).length }, reason: "" },
+        { id: "rel.xs.peer_mom", family: "relative", score: Math.tanh(10 * peerMean), confidence: 0.4, horizon: "any", value: { assetClass, nPeers: P.length }, reason: "" },
       ];
     },
   };
@@ -168,42 +174,45 @@ test("buildDataset: row shape, families, labels vs candles, ordering", async () 
   assert.equal(ds.rows.filter((r) => r.lab === null).length, 7 * 5);
 });
 
-test("strictly point-in-time: perturbing the future (own, peers, benchmark, macro, F&G) leaves rows ≤ i unchanged", async () => {
-  const U = universe(290);
-  const rel = spyRelative();
-  const a = await D.buildDataset({ ...BASE, candlesByAsset: U.cb, macroHistory: U.macro, fearGreedHistory: U.fng, relative: rel });
-  assert.ok(a.signalIds.includes("rel.rs.1m") && a.signalIds.includes("rel.xs.peer_mom"));
-  const K = 240;                                          // perturb every bar after index K
-  const tK = U.cb["STOCK:SPY"][K].t;
-  const r = prng(4242);
-  const cb2 = {};
-  for (const [id, cs] of Object.entries(U.cb)) {
-    cb2[id] = cs.map((c) => {
-      if (c.t <= tK) return { ...c };
-      const f = Math.exp(0.1 * gauss(r));
-      return { t: c.t, o: c.o * f, h: c.h * f * 1.02, l: c.l * f * 0.98, c: c.c * f * (1 + 0.01 * gauss(r)), v: c.v * 3 };
-    });
-  }
-  const macro2 = { vix: U.macro.vix.map((p) => (p.t > tK - DAY ? { t: p.t, v: p.v * 3 } : p)), hyOas: U.macro.hyOas.map((p) => (p.t > tK - DAY ? { t: p.t, v: p.v + 5 } : p)) };
-  const fng2 = U.fng.map((p) => (p.t > tK ? { t: p.t, v: 100 - p.v } : p));
-  const rel2 = spyRelative();
-  const b = await D.buildDataset({ ...BASE, candlesByAsset: cb2, macroHistory: macro2, fearGreedHistory: fng2, relative: rel2 });
-  assert.deepEqual(rel.leaks, []);
-  assert.deepEqual(rel2.leaks, []);
-  assert.equal(a.rows.length, b.rows.length);
-  let past = 0, pastLab = 0, futureDiff = 0;
-  for (let k = 0; k < a.rows.length; k++) {
-    const x = a.rows[k], y = b.rows[k];
-    assert.equal(x.assetId, y.assetId); assert.equal(x.t, y.t);
-    if (x.t <= tK) {
-      assert.equal(pit(x), pit(y), `row ${x.assetId} @ ${new Date(x.t).toISOString()} moved`);
-      past++;
-      if (x.lab && x.lab.tEnd <= tK) { assert.equal(canon(x.lab), canon(y.lab)); pastLab++; }
-    } else if (pit(x) !== pit(y)) futureDiff++;
-  }
-  assert.ok(past > 150 && pastLab > 100, `${past} past rows, ${pastLab} past labels checked`);
-  assert.ok(futureDiff > 0.5 * (a.rows.length - past), "the perturbation does move later rows");
-});
+for (const relativeInput of ["full", "slice"]) {
+  test(`strictly point-in-time: perturbing the future (own, peers, benchmark, macro, F&G) leaves rows ≤ i unchanged (relative input: ${relativeInput})`, async () => {
+    const U = universe(290);
+    const rel = spyRelative();
+    const a = await D.buildDataset({ ...BASE, relativeInput, candlesByAsset: U.cb, macroHistory: U.macro, fearGreedHistory: U.fng, relative: rel });
+    assert.ok(a.signalIds.includes("rel.rs.1m") && a.signalIds.includes("rel.xs.peer_mom"));
+    const K = 240;                                          // perturb every bar after index K
+    const tK = U.cb["STOCK:SPY"][K].t;
+    const r = prng(4242);
+    const cb2 = {};
+    for (const [id, cs] of Object.entries(U.cb)) {
+      cb2[id] = cs.map((c) => {
+        if (c.t <= tK) return { ...c };
+        const f = Math.exp(0.1 * gauss(r));
+        return { t: c.t, o: c.o * f, h: c.h * f * 1.02, l: c.l * f * 0.98, c: c.c * f * (1 + 0.01 * gauss(r)), v: c.v * 3 };
+      });
+    }
+    const macro2 = { vix: U.macro.vix.map((p) => (p.t > tK - DAY ? { t: p.t, v: p.v * 3 } : p)), hyOas: U.macro.hyOas.map((p) => (p.t > tK - DAY ? { t: p.t, v: p.v + 5 } : p)) };
+    const fng2 = U.fng.map((p) => (p.t > tK ? { t: p.t, v: 100 - p.v } : p));
+    const rel2 = spyRelative();
+    const b = await D.buildDataset({ ...BASE, relativeInput, candlesByAsset: cb2, macroHistory: macro2, fearGreedHistory: fng2, relative: rel2 });
+    assert.deepEqual(rel.leaks, []);
+    assert.deepEqual(rel2.leaks, []);
+    if (relativeInput === "slice") assert.equal(rel.handed.future + rel2.handed.future, 0, "slice mode hands over bars ≤ t only");
+    assert.equal(a.rows.length, b.rows.length);
+    let past = 0, pastLab = 0, futureDiff = 0;
+    for (let k = 0; k < a.rows.length; k++) {
+      const x = a.rows[k], y = b.rows[k];
+      assert.equal(x.assetId, y.assetId); assert.equal(x.t, y.t);
+      if (x.t <= tK) {
+        assert.equal(pit(x), pit(y), `row ${x.assetId} @ ${new Date(x.t).toISOString()} moved`);
+        past++;
+        if (x.lab && x.lab.tEnd <= tK) { assert.equal(canon(x.lab), canon(y.lab)); pastLab++; }
+      } else if (pit(x) !== pit(y)) futureDiff++;
+    }
+    assert.ok(past > 150 && pastLab > 100, `${past} past rows, ${pastLab} past labels checked`);
+    assert.ok(futureDiff > 0.5 * (a.rows.length - past), "the perturbation does move later rows");
+  });
+}
 
 test("updateDataset is incremental and reproduces a full build exactly", async () => {
   const U = universe(300);
@@ -267,6 +276,9 @@ test("strictly point-in-time with the real relative analyzer + primed cache", { 
   const opts = { ...BASE, macroHistory: U.macro, fearGreedHistory: U.fng };
   const a = await D.buildDataset({ ...opts, candlesByAsset: U.cb });
   assert.ok(a.meta.relative && a.signalIds.some((id) => id.startsWith("rel.")), "relative family present");
+  // The fast path (full peer/benchmark arrays + t) equals handing over only bars ≤ t.
+  const sliced = await D.buildDataset({ ...opts, candlesByAsset: U.cb, relativeInput: "slice" });
+  assert.equal(canon(sliced.rows), canon(a.rows));
   const K = 250, tK = U.cb["STOCK:SPY"][K].t;
   const r = prng(777);
   const cb2 = {};

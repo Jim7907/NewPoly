@@ -166,11 +166,15 @@ function resolveDrift(status, horizon) {
         level: ratio == null ? lvl(m) : ratio >= 1 ? "drift" : ratio > (num(r.warnFrac) ?? 0.5) ? "warn" : "ok" });
     }
   }
-  let dr = hz.deRisk ?? hz.derisk ?? s.deRisk ?? s.derisk ?? d.deRisk ?? d.derisk;
+  const byHz = obj(s.deriskByHorizon);
+  let dr = horizon in byHz ? byHz[horizon] : hz.deRisk ?? hz.derisk ?? s.deRisk ?? s.derisk ?? d.deRisk ?? d.derisk;
   if (dr && typeof dr === "object" && dr[horizon] != null) dr = dr[horizon];
   const drObj = dr === true ? { active: true } : obj(dr);
   const active = drObj.active === true || (drObj.active == null && toMs(drObj.until) != null && toMs(drObj.until) > Date.now());
-  return { level, live, monitors: expanded.map(m => ({ ...m, _level: lvl(m) })), deRisk: { ...drObj, active } };
+  // A flat drift block describes the status horizon only (selfImprove.status() reports the default one).
+  const keyed = !!(hz.drift || (s.drift && typeof s.drift === "object" && s.drift[horizon]));
+  const of = !keyed && s.horizon && s.horizon !== horizon ? s.horizon : null;
+  return { level, live, of, monitors: expanded.map(m => ({ ...m, _level: lvl(m) })), deRisk: { ...drObj, active } };
 }
 const isRunning = (s) => { const o = obj(s); return o.running === true || o.busy === true || o.inProgress === true || /^(running|busy|training|in[-_ ]?progress)$/i.test(String(o.state ?? o.status ?? "")); };
 
@@ -193,13 +197,17 @@ export function pcRows(metrics) {
   return list.filter(r => r.thr != null && r.precision != null).sort((a, b) => a.thr - b.thr);
 }
 function thrVals(e) {
-  const m = { ...obj(e), ...obj(e?.model), ...obj(e?.thresholds), ...obj(e?.value) };
+  const m = { ...obj(e), ...obj(e?.model), ...obj(obj(e?.model).thresholds), ...obj(e?.thresholds), ...obj(obj(e?.thresholds).thresholds), ...obj(e?.value) };
   return {
     minConf: num(pick(m, "minConfidence", "MIN_CONFIDENCE", "min_confidence")),
     minEdge: num(pick(m, "minProbEdge", "MIN_PROB_EDGE", "min_prob_edge")),
     metaThr: num(pick(m, "metaThreshold", "metaP", "meta_threshold", "minMetaP", "META_THRESHOLD")),
   };
 }
+const dsrOf = (m) => num(obj(m.dsr).dsr ?? m.dsr ?? m.deflatedSharpe ?? m.DSR);
+const pboOf = (m) => num(obj(m.pbo).pbo ?? m.pbo ?? m.PBO);
+const netOf = (m) => num(pick(m, "netRet", "expRet", "netExpRet")) ?? num(obj(m.nested).meanRet) ?? num(obj(m.best).meanRet);
+const actOf = (m) => num(pick(m, "activity", "coverage")) ?? num(obj(m.best).activity) ?? num(obj(m.nested).activity);
 function maskSummary(e) {
   const raw = obj(obj(e?.model).mask ?? e?.model ?? e?.mask);
   const vals = Object.values(raw).map(num).filter(v => v != null);
@@ -216,11 +224,11 @@ const Mono = ({ children, color = C.sub, size = 10, style }) => <span style={{ f
 function Pill({ color, bg, children, title, strong }) {
   return <span title={title} style={{ display: "inline-flex", alignItems: "center", gap: 4, color, background: bg || C.inset, border: `1px solid ${color}${strong ? "" : "88"}`, borderRadius: 4, padding: "2px 7px", fontFamily: MONO, fontSize: 9.5, fontWeight: 800, letterSpacing: 0.6, whiteSpace: "nowrap" }}>{children}</span>;
 }
-const LevelChip = ({ level }) => {
+const LevelChip = ({ level, of }) => {
   const l = level || null;
   const c = LEVEL_COLOR[l] || C.dim;
   const icon = l === "ok" ? "●" : l === "warn" ? "▲" : l === "drift" ? "◆" : "○";
-  return <Pill color={c} title="drift monitor state (Page-Hinkley over live log-loss / hit rate)">{icon} DRIFT {l ? l.toUpperCase() : "—"}</Pill>;
+  return <Pill color={c} title={`drift monitor state (Page-Hinkley over live log-loss / hit rate)${of ? ` for the ${of} horizon` : ""}`}>{icon} DRIFT {l ? l.toUpperCase() : "—"}{of ? ` · ${String(of).toUpperCase()}` : ""}</Pill>;
 };
 function Segmented({ value, options, onChange, small }) {
   return (
@@ -240,13 +248,16 @@ function StatusHeader({ s, missing, horizon, setHorizon, running, onRun, busy, m
   const so = obj(s);
   const cur = obj(so.current ?? so.currentCycle ?? so.active);
   const sched = obj(so.schedule);
-  const nextRun = pick(so, "nextRun", "nextRunAt", "next", "nextAt") ?? sched.nextRun ?? sched.nextRunAt;
+  const nextRun = obj(so.nextRuns)[horizon] ?? pick(so, "nextRun", "nextRunAt", "next", "nextAt") ?? sched.nextRun ?? sched.nextRunAt;
   const every = num(pick(so, "everyMs", "intervalMs")) ?? num(sched.everyMs);
   const lastTs = last?.ts ?? so.lastRunAt ?? so.lastRun;
-  const dur = num(pick(obj(last), "durationMs", "duration", "ms", "elapsedMs"));
+  const tsum = Object.values(obj(last?.timings)).map(num).filter(v => v != null);
+  const dur = num(pick(obj(last), "durationMs", "duration", "ms", "elapsedMs")) ?? (tsum.length ? tsum.reduce((a, b) => a + b, 0) : null);
   const startedAt = cur.startedAt ?? cur.ts ?? so.startedAt;
-  const stage = cur.stage ?? cur.step ?? cur.phase ?? so.stage;
-  const progress = num(cur.progress ?? so.progress);
+  const po = obj(cur.progress);
+  const stage = cur.stage ?? cur.step ?? cur.phase ?? po.phase ?? po.stage ?? so.stage;
+  const progress = num(cur.progress) ?? num(po.frac ?? po.pct) ?? (num(po.done) != null && num(po.total) ? num(po.done) / num(po.total) : null);
+  const queue = arr(so.queue);
   const dr = drift.deRisk;
   const bump = num(pick(dr, "minConfidenceBump", "minConfBump", "confBump", "minConfDelta", "minConfidenceDelta")) ?? 0.05;
   const size = num(pick(dr, "sizeMult", "sizeMultiplier", "sizeFactor", "size")) ?? 0.5;
@@ -260,12 +271,12 @@ function StatusHeader({ s, missing, horizon, setHorizon, running, onRun, busy, m
             {running
               ? <Pill color={C.blue} bg="#062033" strong><span className="de-pulse">●</span> RUNNING</Pill>
               : <Pill color={missing ? C.dim : C.sub}>{missing ? "○ NO STATUS" : "■ IDLE"}</Pill>}
-            <LevelChip level={drift.level} />
+            <LevelChip level={drift.level} of={drift.of} />
             {dr.active && <Pill color={C.amber} bg="#1f1404" strong>⚠ DE-RISK</Pill>}
           </div>
           <div style={{ fontSize: 11, color: C.sub, lineHeight: 1.45, marginTop: 5 }}>
             {running
-              ? <>Cycle running{cur.horizon ? ` · ${cur.horizon}` : ""}{stage ? <> · <b style={{ color: C.text }}>{String(stage)}</b></> : ""}{toMs(startedAt) != null ? ` · ${fmtDur(now - toMs(startedAt))} elapsed` : ""}{cur.reason ? ` · ${cur.reason}` : ""}</>
+              ? <>Cycle running{cur.horizon ? ` · ${cur.horizon}` : ""}{stage ? <> · <b style={{ color: C.text }}>{String(stage)}</b></> : ""}{toMs(startedAt) != null ? ` · ${fmtDur(now - toMs(startedAt))} elapsed` : ""}{cur.reason ? ` · ${cur.reason}` : ""}{queue.length ? ` · ${queue.length} queued` : ""}</>
               : missing ? "The lab hasn't reported a status yet. Run a cycle to build the dataset, the report card and the first champions."
                 : <>Idle. Challengers retrain every {fmtDur(every ?? 6 * 3600e3)} and go live only if they beat the champion out of sample (DM p &lt; 0.10).</>}
           </div>
@@ -387,8 +398,8 @@ function ChampionCard({ slot, e, onRollback, busy, horizon }) {
     ) : <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.sub }}>{Object.keys(m).length ? Object.entries(m).filter(([, v]) => typeof v !== "object").slice(0, 4).map(([k, v]) => `${k} ${fmtAny(k, v)}`).join(" · ") : "multipliers not included in status"}</div>;
   } else {
     const t = thrVals(e);
-    const dsr = num(pick(m, "deflatedSharpe", "dsr", "DSR"));
-    const pbo = num(pick(m, "pbo", "PBO"));
+    const dsr = dsrOf(m);
+    const pbo = pboOf(m);
     body = (
       <div style={{ display: "grid", gap: 4 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 4 }}>
@@ -399,9 +410,9 @@ function ChampionCard({ slot, e, onRollback, busy, horizon }) {
         <div style={{ fontFamily: MONO, fontSize: 10, color: C.sub, display: "flex", gap: 10, flexWrap: "wrap" }}>
           <span>DSR <b style={{ color: dsr == null ? C.dim : dsr >= 0.5 ? C.up : C.down }}>{fx(dsr, 2)}</b></span>
           <span>PBO <b style={{ color: pbo == null ? C.dim : pbo <= 0.5 ? C.up : C.down }}>{fx(pbo, 2)}</b></span>
-          {num(pick(m, "activity", "coverage")) != null && <span>activity <b style={{ color: C.text }}>{pct(pick(m, "activity", "coverage"), 0)}</b></span>}
+          {actOf(m) != null && <span>activity <b style={{ color: C.text }}>{pct(actOf(m), 0)}</b></span>}
           {num(m.precision) != null && <span>precision <b style={{ color: C.text }}>{pct(m.precision, 1)}</b></span>}
-          {num(pick(m, "netRet", "expRet", "netExpRet")) != null && <span>net/decision <b style={{ color: colorSign(pick(m, "netRet", "expRet", "netExpRet")) }}>{spct(pick(m, "netRet", "expRet", "netExpRet"), 2)}</b></span>}
+          {netOf(m) != null && <span>net/decision <b style={{ color: colorSign(netOf(m)) }}>{spct(netOf(m), 2)}</b></span>}
         </div>
       </div>
     );
@@ -569,8 +580,9 @@ function flatSummary(x) {
   const out = [];
   for (const [k, v] of Object.entries(obj(x))) {
     if (v == null) continue;
-    if (Array.isArray(v)) out.push([k, v.length]);
-    else if (typeof v === "object") { for (const [k2, v2] of Object.entries(v)) if (Array.isArray(v2)) out.push([k2, v2.length]); else if (v2 != null && typeof v2 !== "object") out.push([k2, v2]); }
+    const flat = /^(verdicts|summary|counts)$/i.test(k);
+    if (Array.isArray(v)) { if (v.every(x => typeof x !== "object")) out.push([k, v.length]); }
+    else if (typeof v === "object") { for (const [k2, v2] of Object.entries(v)) { const kk = flat ? k2 : `${k} ${k2}`; if (Array.isArray(v2)) out.push([kk, v2.length]); else if (v2 != null && typeof v2 !== "object") out.push([kk, v2]); } }
     else out.push([k, v]);
   }
   return out.slice(0, 12);
@@ -588,7 +600,8 @@ function ChallengerRow({ ch, narrow }) {
   if (mAUC(m) != null) bits.push(["auc", mAUC(m).toFixed(3)]);
   if (mDmP(m) != null) bits.push(["DM p", mDmP(m).toFixed(3)]);
   if (kind === "meta") { const rows = pcRows(m); if (rows.length) bits.push(["P@max", pct(Math.max(...rows.map(r => r.precision)), 0)]); }
-  if (kind === "thresholds") { const t = thrVals(c); if (t.minConf != null) bits.push(["conf", fx(t.minConf, 2)]); const dsr = num(pick(m, "deflatedSharpe", "dsr")); if (dsr != null) bits.push(["DSR", fx(dsr, 2)]); const pbo = num(pick(m, "pbo", "PBO")); if (pbo != null) bits.push(["PBO", fx(pbo, 2)]); }
+  if (kind === "thresholds") { const t = thrVals(c); const mm = { ...c, ...m }; if (t.minConf != null) bits.push(["conf", fx(t.minConf, 2)]); if (t.minEdge != null) bits.push(["edge", fx(t.minEdge, 3)]); if (t.metaThr != null) bits.push(["meta", fx(t.metaThr, 2)]); if (dsrOf(mm) != null) bits.push(["DSR", fx(dsrOf(mm), 2)]); if (pboOf(mm) != null) bits.push(["PBO", fx(pboOf(mm), 2)]); }
+  if (kind === "mask") { if (num(m.n) != null) bits.push(["n", m.n]); if (num(m.dropped) != null) bits.push(["×0", m.dropped]); if (num(m.boosted) != null) bits.push([">1", m.boosted]); }
   return (
     <div style={{ display: "grid", gridTemplateColumns: narrow ? "16px minmax(0, 1fr)" : "16px 150px 250px minmax(0, 1fr)", gap: narrow ? "2px 6px" : 8, alignItems: "baseline", fontFamily: MONO, fontSize: 10.5, padding: "3px 0" }}>
       <span style={{ color: ok ? C.up : C.down, fontWeight: 800 }} aria-label={ok ? "promoted" : "rejected"}>{ok ? "✓" : "✗"}</span>
@@ -602,12 +615,15 @@ function ChallengerRow({ ch, narrow }) {
 }
 
 function CycleItem({ c, first, narrow, now }) {
-  const chs = arr(c.challengers);
+  const chs0 = arr(c.challengers);
+  const tObj = obj(c.thresholds);
+  const chs = typeof tObj.promoted === "boolean" && !chs0.some(x => x?.kind === "thresholds") ? [...chs0, { kind: "thresholds", ...tObj, metrics: tObj }] : chs0;
   const nProm = chs.filter(x => x?.promoted === true).length;
   const summ = flatSummary(c.reportCardSummary);
   const thr = thrVals({ model: c.thresholds });
   const drift = typeof c.drift === "string" ? c.drift : c.drift?.level ?? (c.drift?.drift === true ? "drift" : null);
-  const dur = num(pick(c, "durationMs", "duration", "ms", "elapsedMs"));
+  const tsum = Object.values(obj(c.timings)).map(num).filter(v => v != null);
+  const dur = num(pick(c, "durationMs", "duration", "ms", "elapsedMs")) ?? (tsum.length ? tsum.reduce((a, b) => a + b, 0) : null);
   const failed = c.error || c.ok === false || c.status === "failed";
   const dotColor = failed ? C.down : nProm ? C.up : C.hold;
   return (
@@ -628,7 +644,7 @@ function CycleItem({ c, first, narrow, now }) {
         {summ.map(([k, v]) => <Tag key={k} color={/keep/i.test(k) ? C.up : /drop/i.test(k) ? C.down : /invert/i.test(k) ? C.violet : /weak/i.test(k) ? C.warn : C.sub}>{k} {fmtAny(k, v)}</Tag>)}
       </div>}
       {chs.length > 0 && <div style={{ marginTop: 5, borderLeft: `1px solid ${C.border}`, paddingLeft: 8 }}>{chs.map((ch, i) => <ChallengerRow key={i} ch={ch} narrow={narrow} />)}</div>}
-      {(thr.minConf != null || thr.minEdge != null || thr.metaThr != null) && <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, marginTop: 4 }}>
+      {!chs.some(x => x?.kind === "thresholds") && (thr.minConf != null || thr.minEdge != null || thr.metaThr != null) && <div style={{ fontFamily: MONO, fontSize: 10, color: C.dim, marginTop: 4 }}>
         thresholds → conf {fx(thr.minConf, 2)} · edge {fx(thr.minEdge, 3)} · meta-P {fx(thr.metaThr, 2)}
       </div>}
     </div>

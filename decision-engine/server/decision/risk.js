@@ -54,32 +54,69 @@ function quantile(x, q) {
 // Model: log-price is Brownian with per-bar vol σ ≈ atrPct/1.5 (ATR ≈ 1.4–1.6σ_bar, RESEARCH §3.5)
 // and drift μ chosen so that P(return over H bars > 0) = pWin, i.e. μ = Φ⁻¹(pWin)·σ/√H.
 // By optional stopping (X_t − μt is a martingale), E[return at exit] = μ·E[τ], where
-// τ = min(H, first touch of −S or +T). E[τ] is approximated by the harmonic blend of the time
-// cap H and the driftless two-barrier exit time S·T/σ²:  E[τ] ≈ 1 / (1/H + σ²/(S·T)).
-// This is exactly 0 for pWin = 0.5 regardless of bracket asymmetry (no free lunch from a 3:2
-// bracket), which a naive p·T − (1−p)·S does NOT satisfy.
+// τ = min(H, first touch of −S or +T). E[τ] is the EXACT driftless expected exit time of a
+// Brownian motion in (−S, +T) capped at H (see expectedExitTime; the edges we trade are small, so
+// the drift correction to E[τ] is second order). This is exactly 0 for pWin = 0.5 regardless of
+// bracket asymmetry (no free lunch from a 3:2 bracket), which a naive p·T − (1−p)·S does NOT satisfy.
+// AUDIT (2026-09): the previous harmonic approximation E[τ] ≈ 1/(1/H + σ²/(S·T)) understated the
+// holding time by 22–26% at the swing/position brackets (Monte Carlo: 3.65 vs 4.66 bars at H=5),
+// so eGross — and the cost gate built on it — were ~25% too pessimistic.
 // pEff is the win probability of the equivalent two-outcome bet (+T / −S) with the same mean.
+// variance ≈ σ²·E[τ] (Wald's second identity) is the variance of the bracketed P&L; most trades end
+// at the time limit with a small P&L, so it is 2–3× smaller than the two-outcome proxy W·L.
 function bracketExpectation({ pWin, atrPct, stopAtr = 2, targetAtr = 3, horizonBars = 5, costFrac = 0 } = {}) {
   const p = clamp(fin(pWin, 0.5), 0.001, 0.999);
   const a = fin(atrPct, 0);
   const H = Math.max(1, fin(horizonBars, 5));
   const c = Math.max(0, fin(costFrac, 0));
-  if (!(a > 0)) return { eGross: 0, eNet: -c, pEff: 0.5, expectedBars: 0, winFrac: 0, lossFrac: 0, costFrac: c };
+  if (!(a > 0)) return { eGross: 0, eNet: -c, pEff: 0.5, expectedBars: 0, winFrac: 0, lossFrac: 0, costFrac: c, variance: 0 };
   const sigma = a / ATR_TO_SIGMA;
   const S = Math.max(1e-9, fin(stopAtr, 2) * a), T = Math.max(1e-9, fin(targetAtr, 3) * a);
   const mu = normInv(p) * sigma / Math.sqrt(H);
-  const expectedBars = 1 / (1 / H + (sigma * sigma) / (S * T));
+  const expectedBars = expectedExitTime(sigma, S, T, H);
   const eGross = mu * expectedBars;
   const pEff = clamp((eGross + S) / (S + T), 0, 1);
-  return { eGross, eNet: eGross - c, pEff, expectedBars, winFrac: T - c, lossFrac: S + c, costFrac: c };
+  const variance = sigma * sigma * expectedBars;
+  return { eGross, eNet: eGross - c, pEff, expectedBars, winFrac: T - c, lossFrac: S + c, costFrac: c, variance };
+}
+
+// E[min(τ, H)] for a driftless Brownian motion (per-bar vol σ) started at 0 with absorbing
+// barriers at −S and +T:  ∫₀ᴴ P(τ > t) dt, with the survival probability from the method of images
+// (interval (0, L), L = S+T, start x₀ = S):
+//   P(τ > t) = Σ_k [Φ((L−x₀+2kL)/s) − Φ((−x₀+2kL)/s) − Φ((L+x₀+2kL)/s) + Φ((x₀+2kL)/s)],  s = σ√t
+// integrated with composite Simpson on 256 panels after the substitution t = H·u² (nodes crowd near
+// t = 0, where the survival curve falls when the barriers are close). Error < 1e-3 bars.
+function expectedExitTime(sigma, S, T, H) {
+  if (!(sigma > 0) || !(H > 0)) return Math.max(0, fin(H, 0));
+  const L = S + T, x0 = S;
+  const sMax = sigma * Math.sqrt(H);
+  const K = Math.min(50, Math.ceil((3 * sMax) / (2 * L)) + 2);
+  const surv = (t) => {
+    if (t <= 0) return 1;
+    const s = sigma * Math.sqrt(t);
+    let v = 0;
+    for (let k = -K; k <= K; k++) {
+      const o = 2 * k * L;
+      v += normCdf((L - x0 + o) / s) - normCdf((-x0 + o) / s) - normCdf((L + x0 + o) / s) + normCdf((x0 + o) / s);
+    }
+    return clamp(v, 0, 1);
+  };
+  // ∫₀ᴴ P(τ>t) dt = ∫₀¹ P(τ > H·u²)·2H·u du
+  const N = 256, h = 1 / N, g = (u) => surv(H * u * u) * 2 * H * u;
+  let acc = g(0) + g(1);
+  for (let i = 1; i < N; i++) acc += (i % 2 ? 4 : 2) * g(i * h);
+  return clamp((acc * h) / 3, 0, H);
 }
 
 // ---------- position sizing ----------
 // sizeFrac = min(fractional Kelly for the ATR bracket, TARGET_VOL/annVol, MAX_POS_FRAC[class])
 //            × correlation haircut (1 − 0.5·max(0,ρ)), then limited by remaining gross capacity.
 // `pUp` is the probability the trade's OWN direction is right (callers pass 1−P(up) for shorts).
-// Kelly for a two-outcome bet: win W = T − costs, lose L = S + costs, win prob pEff:
-//   f* = (pEff·W − (1−pEff)·L) / (W·L) = eNet / (W·L);
+// Kelly (small-edge / log-utility form) for the bracketed trade: f* = E[r_net] / Var[r], with
+//   Var[r] = σ²·E[min(τ,H)] (Wald) — the actual variance of a bracket that mostly exits at the time
+//   limit. AUDIT (2026-09): the previous two-outcome proxy f* = eNet/(W·L) (win W = T − costs, lose
+//   L = S + costs) treated every trade as ending at the stop or the target; Monte Carlo shows only
+//   ~20% do, so W·L overstated the P&L variance 2–3× and under-sized Kelly by the same factor.
 //   kellyFrac = KELLY_K · reliability · max(0, f*)   (reliability ∈ [0,1] from the calibrator —
 //   Kelly shrinks further when p itself is uncertain; Baker & McHale 2013).
 // MAX_POS_FRAC is per class: cfg.MAX_POS_FRAC (stocks, 0.10) / cfg.MAX_POS_FRAC_CRYPTO (0.05).
@@ -101,7 +138,7 @@ function positionSize({ pUp, riskReward, atrPct, annVol, equity, cfg = {}, openP
   const a = fin(atrPct, 0);
   if (!(a > 0)) { capped.push("no_atr"); return out(0, 0, 0); }
   const br = bracketExpectation({ pWin: pUp, atrPct: a, stopAtr: sAtr, targetAtr: rr * sAtr, horizonBars, costFrac });
-  const kellyRaw = br.eNet > 0 ? br.eNet / (br.winFrac * br.lossFrac) : 0;
+  const kellyRaw = br.eNet > 0 && br.variance > 0 ? br.eNet / br.variance : 0;
   const kellyFrac = Math.max(0, K * kellyRaw);
   // annualized vol fallback from ATR (σ_bar ≈ atrPct/1.5).
   const av = fin(annVol, 0) > 0 ? annVol : (a / ATR_TO_SIGMA) * Math.sqrt(Math.max(1, periodsPerYear));
@@ -202,6 +239,6 @@ function correlation(a, b) {
 }
 
 module.exports = {
-  positionSize, bracketExpectation, var95, cvar95, maxDrawdown, sharpe, sortino, correlation,
+  positionSize, bracketExpectation, expectedExitTime, var95, cvar95, maxDrawdown, sharpe, sortino, correlation,
   normCdf, normInv, quantile, mean, sd, clamp, ATR_TO_SIGMA,
 };

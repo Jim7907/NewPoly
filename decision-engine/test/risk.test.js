@@ -38,9 +38,9 @@ test("positionSize: no edge → 0; Kelly scales with reliability; caps bind with
   const args = { pUp: 0.56, riskReward: 1.5, atrPct: 0.02, annVol: 0.05, equity: 100000, cfg: { ...CFG, MAX_POS_FRAC: 1 }, costFrac: 0.001 };
   const full = R.positionSize(args), half = R.positionSize({ ...args, reliability: 0.5 });
   assert.ok(full.kellyFrac > 0 && close(half.kellyFrac, full.kellyFrac / 2, 1e-12));
-  // Kelly = K·eNet/(W·L)
+  // Kelly = K·eNet/Var[r], Var[r] = σ²·E[min(τ,H)] (audit fix: was the two-outcome proxy W·L)
   const br = R.bracketExpectation({ pWin: 0.56, atrPct: 0.02, stopAtr: 2, targetAtr: 3, horizonBars: 5, costFrac: 0.001 });
-  assert.ok(close(full.kellyFrac, 0.25 * br.eNet / (br.winFrac * br.lossFrac), 1e-12));
+  assert.ok(close(full.kellyFrac, 0.25 * br.eNet / br.variance, 1e-12));
 
   const stock = R.positionSize({ ...args, pUp: 0.6, cfg: CFG, annVol: 0.2 });
   assert.ok(close(stock.volTargetFrac, 0.6));
@@ -110,4 +110,33 @@ test("positionSize: db-style open positions (costUsd, assetClass) drive gross ca
   assert.ok(close(c.sizeFrac, 0.05 * 0.65));
   const g = R.positionSize({ ...args, openPositions: [{ assetClass: "crypto", costUsd: 99000 }] });
   assert.ok(close(g.sizeFrac, 0.01) && g.capped.includes("gross"));
+});
+
+// ── Audit regressions (2026-09) ──
+test("audit: expectedExitTime is the exact driftless E[min(τ,H)] (was a harmonic approximation 22% low)", () => {
+  // Monte Carlo with continuous monitoring gives ≈ 4.60 bars for a 2/3-ATR bracket over 5 bars
+  // (σ_bar = ATR/1.5); the old formula 1/(1/H + σ²/(S·T)) gave 3.65.
+  const sig = 0.02 / 1.5;
+  const e = R.expectedExitTime(sig, 2 * 0.02, 3 * 0.02, 5);
+  assert.ok(Math.abs(e - 4.6045) < 0.01, `E[τ]=${e}`);
+  const old = 1 / (1 / 5 + (sig * sig) / (0.04 * 0.06));
+  assert.ok(e > old * 1.2, "the new value is materially larger than the old approximation");
+  // limits: barriers far away → H; barriers very close → ~ S·T/σ² (unbounded exit time) ≪ H
+  assert.ok(Math.abs(R.expectedExitTime(0.001, 1, 1, 5) - 5) < 1e-6);
+  const tight = R.expectedExitTime(0.02, 0.002, 0.003, 50);
+  assert.ok(Math.abs(tight - (0.002 * 0.003) / 0.0004) < 0.01, `${tight}`);
+  // bracketExpectation uses it and reports the bracket variance σ²·E[τ]
+  const b = R.bracketExpectation({ pWin: 0.55, atrPct: 0.02, stopAtr: 2, targetAtr: 3, horizonBars: 5 });
+  assert.ok(Math.abs(b.expectedBars - e) < 1e-9);
+  assert.ok(Math.abs(b.variance - sig * sig * e) < 1e-15);
+  assert.ok(b.variance < b.winFrac * b.lossFrac / 2, "true bracket variance is well below the two-outcome proxy");
+});
+
+test("audit: Kelly uses the bracket variance, so it is ~2-3x the old two-outcome Kelly", () => {
+  const CFGX = { ...CFG, MAX_POS_FRAC: 1, MAX_POS_FRAC_CRYPTO: 1, TARGET_VOL: 10 };
+  const args = { pUp: 0.57, riskReward: 1.5, atrPct: 0.02, annVol: 0.2, equity: 1e5, cfg: CFGX, costFrac: 0.001 };
+  const r = R.positionSize(args);
+  const br = R.bracketExpectation({ pWin: 0.57, atrPct: 0.02, stopAtr: 2, targetAtr: 3, horizonBars: 5, costFrac: 0.001 });
+  const oldKelly = 0.25 * br.eNet / (br.winFrac * br.lossFrac);
+  assert.ok(r.kellyFrac > 2 * oldKelly && r.kellyFrac < 4 * oldKelly, `${r.kellyFrac} vs old ${oldKelly}`);
 });
