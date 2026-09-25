@@ -61,7 +61,7 @@ export default function BacktestTab({ decisions, defaultHorizon }) {
   const trades = arr(r.trades).map(t => ({ ...normTrade(t), _p: num(pick(t, "pUp", "p")), _a: pick(t, "action") }));
   const cal = calibStats(r.calibrationPairs);
   const bins = arr(r.calibrationPairs).length ? cal.bins : normBins(r.calibration?.bins);
-  const bhRet = bh && bh.length > 1 ? num(bh[bh.length - 1].v) / num(bh[0].v) - 1 : num(pick(m, "buyHoldReturn", "bhReturn", "buyHold"));
+  const bhRet = bh && bh.length > 1 ? num(bh[bh.length - 1].v) / num(bh[0].v) - 1 : num(pick(m, "buyHoldReturn", "bhReturn") ?? (m.buyHold && typeof m.buyHold === "object" ? m.buyHold.totalReturn : m.buyHold));
   const stratRet = num(pick(m, "totalReturn")) ?? (eq.length > 1 ? num(eq[eq.length - 1].v) / num(eq[0].v) - 1 : null);
   const eqScale = eq.length && num(eq[0].v) > 10 ? "usd" : "x";
   const yFmt = eqScale === "usd" ? (v) => "$" + (Math.abs(v) >= 1e4 ? (v / 1e3).toFixed(0) + "k" : v.toFixed(0)) : (v) => v.toFixed(2) + "×";

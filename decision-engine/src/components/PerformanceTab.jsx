@@ -97,7 +97,7 @@ export default function PerformanceTab({ refreshKey }) {
       </div>
 
       <WeightsTable weights={d.weights} />
-      <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim }}>Weights: Hedge multiplicative updates on resolved outcomes, clamped to [0.25, 4], slow decay toward 1.</div>
+      <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim }}>Weights: Hedge multiplicative updates on resolved outcomes, clamped to [0.5, 2], slow decay toward 1.</div>
     </div>
   );
 }

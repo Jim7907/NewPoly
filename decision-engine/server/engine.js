@@ -272,9 +272,14 @@ async function rankings({ horizon = currentHorizon(), cls = "stock", maxAgeMs = 
     const masked = brain.applyMask(sigs, horizon);
     const price = candles.at(-1).c;
     const atrA = ind.atr(candles, 14); const atr = atrA.at(-1);
-    const d0 = ensemble.decide({ asset, signals: masked, regime, horizon, price, atr, candles });
-    const row = brain.liveRow(asset, masked, { regime, atrPct: atr / price, annVol: regime?.annVol ?? null, pRaw: d0.pRaw, tfSec: hc.tf });
-    const preds = brain.predict(horizon, row);
+    const cal = calibrators[ckey(horizon, asset.assetClass)] || null;
+    const pitD = ensemble.decide({ asset, signals: brain.pitSignals(masked, hc.tf), regime, horizon, price, atr, candles });
+    const row0 = brain.liveRow(asset, masked, { regime, atrPct: atr / price, annVol: regime?.annVol ?? null, pRaw: pitD.pRaw, tfSec: hc.tf });
+    const preds0 = brain.predict(horizon, row0);
+    // Same gating as the live board (calibrator + base-rate guard + promoted models), so the two views agree.
+    const d0 = ensemble.decide({ asset, signals: masked, regime, horizon, price, atr, candles, calibrator: cal, baseRate: cal?.baseRate,
+      thresholds: { ...thresholds(), ...brain.thresholdsOverride(horizon) }, probability: preds0.probability, meta: preds0.meta });
+    const preds = preds0;
     const relScore = d0.families?.relative?.score ?? 0;
     out.push({
       assetId: asset.id, symbol: asset.symbol, assetClass: asset.assetClass, price,
