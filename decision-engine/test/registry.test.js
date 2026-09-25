@@ -157,3 +157,16 @@ test("hashRows is deterministic and sensitive to the rows used", () => {
   assert.notStrictEqual(R.hashRows(rows.slice(0, 1)), h);
   assert.notStrictEqual(R.hashRows([{ ...rows[0], lab: { y: 0 } }, rows[1]]), h);
 });
+
+test("retire withdraws a champion with no predecessor and bumps version", () => {
+  const { createRegistry, createMemoryStore } = require("../server/learning/registry");
+  const r = createRegistry({ store: createMemoryStore() });
+  const e = r.propose({ horizon: "swing", kind: "stacker", target: "yEx", model: { a: 1 }, metrics: {} });
+  r.promote(e.version, "ok", "swing");
+  const v0 = r.version();
+  assert.throws(() => r.rollback("swing", "stacker", "yEx"), /no previous/);
+  const out = r.retire("swing", "stacker", "yEx", "gate tightened");
+  assert.equal(out.retired.version, e.version);
+  assert.equal(r.champion("swing", "stacker", "yEx"), null);
+  assert.ok(r.version() > v0);
+});

@@ -173,8 +173,17 @@ app.get("/api/lab/registry", (req, res) => {
 app.post("/api/lab/rollback", (req, res) => {
   const reg = lazy("./learning/registry");
   if (!reg?.rollback) return res.status(503).json({ error: "registry not available" });
-  try { const r = reg.rollback(labH(req), req.body?.kind, req.body?.target); brain.reload(true); res.json({ success: true, result: r }); }
-  catch (e) { res.status(400).json({ error: e.message }); }
+  const h = labH(req), kind = req.body?.kind, target = req.body?.target;
+  try {
+    let r;
+    try { r = reg.rollback(h, kind, target); }
+    catch (e) {
+      // No earlier champion to restore → withdraw the champion (engine falls back to v1 pooling).
+      if (!/no previous/.test(e.message) || !reg.retire) throw e;
+      r = reg.retire(h, kind, target, req.body?.reason || "withdrawn via rollback (no earlier champion)");
+    }
+    brain.reload(true); res.json({ success: true, result: r });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.get("/api/rankings", async (req, res) => {
   const cls = req.query.class === "crypto" ? "crypto" : "stock";

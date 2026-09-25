@@ -238,6 +238,28 @@ function createRegistry({ store, maxHistory = DEFAULT_MAX_HISTORY, maxDecisions 
     return { restored: clone(prev), retired: clone(cur) };
   }
 
+  /**
+   * Retire the slot's champion WITHOUT restoring a predecessor (the slot becomes empty and the
+   * engine falls back to the v1 pooled path). Used when a champion must be withdrawn and no earlier
+   * champion exists, e.g. after a promotion rule is tightened. Bumps version().
+   */
+  function retire(horizon, kind, target, reason = "retired") {
+    if (!KINDS.includes(kind)) throw new Error(`registry.retire: kind must be one of ${KINDS.join("|")}`);
+    const b = blob(horizon);
+    const slot = slotOf(kind, target);
+    const cur = championIn(b, slot);
+    if (!cur) throw new Error(`registry.retire: no ${slot} champion for ${horizon}`);
+    const ts = isoNow(now);
+    cur.status = "retired"; cur.retiredAt = ts; cur.reason = reason;
+    b.lineage[slot] = (b.lineage[slot] || []).filter((v) => v !== cur.version);
+    const m = loadMeta();
+    m.version += 1;
+    b.decisions.push({ ts, action: "retire", version: cur.version, kind, target: targetOf(kind, target), reason });
+    if (b.decisions.length > maxDecisions) b.decisions.splice(0, b.decisions.length - maxDecisions);
+    saveMeta(); save(horizon);
+    return { retired: clone(cur), restored: null };
+  }
+
   /** Entries newest first, model JSON stripped (hasModel flag instead). opts: { kind, target, limit, includeModel }. */
   function history(horizon, { kind, target, limit, includeModel = false } = {}) {
     const b = blob(horizon);
@@ -259,7 +281,7 @@ function createRegistry({ store, maxHistory = DEFAULT_MAX_HISTORY, maxDecisions 
   /** Drop in-memory caches (e.g. after the underlying db was re-initialised). */
   function reload() { cache.clear(); meta = null; }
 
-  return { champion, champions, propose, promote, reject, rollback, history, decisions, version, logDecision, reload,
+  return { champion, champions, propose, promote, reject, rollback, retire, history, decisions, version, logDecision, reload,
     get maxHistory() { return maxHistory; } };
 }
 
@@ -272,6 +294,7 @@ module.exports = {
   promote: (...a) => defaultRegistry.promote(...a),
   reject: (...a) => defaultRegistry.reject(...a),
   rollback: (...a) => defaultRegistry.rollback(...a),
+  retire: (...a) => defaultRegistry.retire(...a),
   history: (...a) => defaultRegistry.history(...a),
   decisions: (...a) => defaultRegistry.decisions(...a),
   version: (...a) => defaultRegistry.version(...a),
