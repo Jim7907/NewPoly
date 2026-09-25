@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { C, MONO, FAMILIES, Chip, Tag, Panel, Stat, DivBar, MeterBar, Loading, ErrorBox, Empty, Table, Btn, inputStyle,
   api, num, pct, spct, fx, snum, fprice, usd, ago, dt, arr, obj, colorSign, isActionable, isBearish, divColor, actionMeta } from "./ui.jsx";
 import { CandleChart, Gauge, HistorySpark, FamilyStrip } from "./charts.jsx";
-import { regimeLabel } from "./DecisionBoard.jsx";
+import { regimeLabel, getForecast, DirBadge, StrengthPips, AlignBar, RateBar } from "./DecisionBoard.jsx";
 
 const tfFor = (h) => (h === "intraday" ? 900 : 86400);
 const KAPPA = 0.9;
@@ -123,6 +123,124 @@ function LLMBox({ llm }) {
   );
 }
 
+// ─── Directional forecast: the signals' consensus, always UP/DOWN, independent of the gated action ──
+const Lbl = ({ children, w = 70 }) => <span style={{ fontFamily: MONO, fontSize: 8.5, color: C.dim, letterSpacing: 1.2, width: w, flex: "none", textTransform: "uppercase" }}>{children}</span>;
+
+function VoteBar({ votes }) {
+  const v = votes; const tot = v.up + v.down + v.neutral;
+  if (!tot) return <span style={{ fontFamily: MONO, fontSize: 10, color: C.dim }}>no votes</span>;
+  const segs = [["up", v.up, C.up, "▲"], ["down", v.down, C.down, "▼"], ["neutral", v.neutral, C.hold, "○"]];
+  return (
+    <div style={{ minWidth: 0, flex: 1 }}>
+      <div style={{ display: "flex", gap: 2, height: 8 }}>
+        {segs.filter(x => x[1] > 0).map(([k, n, col]) => <div key={k} title={`${n} signal${n === 1 ? "" : "s"} ${k} (${pct(n / tot, 0)})`} style={{ flex: `${n} 1 0`, minWidth: 3, background: col, opacity: k === "neutral" ? 0.45 : 1, borderRadius: 2 }} />)}
+      </div>
+      <div style={{ display: "flex", gap: 10, fontFamily: MONO, fontSize: 9.5, marginTop: 3, flexWrap: "wrap" }}>
+        {segs.map(([k, n, col, g]) => <span key={k} style={{ color: C.sub, whiteSpace: "nowrap" }}><span style={{ color: col }}>{g}</span> <b style={{ color: C.text }}>{n}</b> {k}</span>)}
+      </div>
+    </div>
+  );
+}
+
+function ReasonList({ title, items, color, sigMap }) {
+  const L = arr(items);
+  if (!L.length) return null;
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontFamily: MONO, fontSize: 9, letterSpacing: 1.5, color, marginBottom: 4 }}>{title}</div>
+      <div style={{ display: "grid", gap: 5 }}>
+        {L.map((x, i) => {
+          const it = typeof x === "string" ? { id: x } : obj(x);
+          const fam = it.family || sigMap[it.id]?.family;
+          return (
+            <div key={(it.id || "") + i} style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", fontFamily: MONO, fontSize: 10, minWidth: 0 }}>
+                <span style={{ color, flex: "none" }}>{color === C.up ? "▲" : color === C.down ? "▼" : "•"}</span>
+                <span title={it.id} style={{ color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.id || "—"}</span>
+                {fam && <Tag>{fam}</Tag>}
+                {num(it.contribution) != null && <span style={{ color: C.dim, flex: "none", marginLeft: "auto" }}>{snum(it.contribution, 3)}</span>}
+              </div>
+              {(it.reason || sigMap[it.id]?.reason) && <div style={{ fontSize: 10.5, color: C.sub, lineHeight: 1.35, paddingLeft: 14 }}>{it.reason || sigMap[it.id]?.reason}</div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ForecastBox({ d }) {
+  const f = getForecast(d);
+  const sigMap = useMemo(() => { const m = {}; for (const s of arr(d?.signals)) if (s?.id) m[s.id] = s; return m; }, [d]);
+  if (!f) return null;
+  const act = isActionable(d.action);
+  const h = f.hist;
+  const actLabel = actionMeta(d.action).label;
+  const pSigDir = f.pSignal == null ? null : f.up ? f.pSignal : 1 - f.pSignal;
+  const pd = f.pDirection;
+  const pdNote = pd == null ? null : pd < 0.5 ? "below 50% — calibration does not back this direction" : pd < 0.52 ? "≈ coin flip once calibrated" : "calibrated";
+  const why = !act
+    ? `Direction is the signals' consensus; the trade action stays ${actLabel} until the confidence/edge gates clear.`
+    : f.agrees === false ? `Direction is the signals' consensus; the trade action (${actLabel}) comes from the gated decision and risk rules, so the two can differ.` : null;
+  const relTag = !act ? <Tag color={C.dim} title="the trade action is confidence/edge gated; the forecast is always given">action {actLabel} · gated</Tag>
+    : f.agrees === true ? <Tag color={C.up}>✓ agrees with {actLabel}</Tag>
+    : f.agrees === false ? <Tag color={C.amber}>≠ differs from {actLabel}</Tag> : null;
+  return (
+    <Panel title="Forecast" pad={12} right={relTag} style={{ borderColor: f.col + "55", background: `linear-gradient(180deg, ${f.up ? "#08170e" : "#190b09"}, ${C.panel} 70%)` }}>
+      <div style={{ display: "flex", gap: 14, alignItems: "stretch", flexWrap: "wrap" }}>
+        <div style={{ flex: "none", width: 104, textAlign: "center", padding: "8px 6px", border: `1px solid ${f.col}66`, background: f.up ? C.upBg : C.downBg, borderRadius: 10, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 3 }}>
+          <div style={{ fontSize: 34, lineHeight: 1, color: f.col }}>{f.up ? "▲" : "▼"}</div>
+          <div style={{ fontFamily: MONO, fontSize: 20, fontWeight: 800, color: f.col, letterSpacing: 1.5 }}>{f.dir}</div>
+          {f.strength && <StrengthPips f={f} />}
+        </div>
+        <div style={{ flex: "1 1 240px", minWidth: 0, display: "grid", gap: 9, alignContent: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Lbl>alignment</Lbl>
+            <div style={{ flex: 1, minWidth: 60 }}><AlignBar f={f} h={9} /></div>
+            <span style={{ fontFamily: MONO, fontSize: 12, fontWeight: 800, color: C.text, width: 38, textAlign: "right" }}>{pct(f.alignment, 0)}</span>
+          </div>
+          <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim, marginTop: -6, paddingLeft: 78 }}>of weighted signal evidence points {f.dir} · tick = 50/50</div>
+          {f.votes && <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}><Lbl>votes</Lbl><VoteBar votes={f.votes} /></div>}
+          {(pSigDir != null || pd != null) && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 6 }}>
+            <Stat label={`signals P(${f.dir.toLowerCase()})`} value={pct(pSigDir, 1)} sub={`raw P(up) ${pct(f.pSignal, 1)}`} title="the signals' own, uncalibrated probability" />
+            <Stat label={`calibrated P(${f.dir.toLowerCase()})`} value={pct(pd, 1)} color={pd == null ? C.text : pd < 0.5 ? C.amber : pd >= 0.55 ? f.col : C.sub} sub={pdNote} title="calibrated probability that the stated direction happens over the horizon — shown as is, even when ≈ or < 50%" />
+          </div>}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10, padding: "8px 10px", background: C.inset, border: `1px solid ${C.border}`, borderRadius: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontFamily: MONO, fontSize: 10.5 }}>
+          <span style={{ fontSize: 8.5, color: C.dim, letterSpacing: 1.2 }}>TRACK RECORD</span>
+          {!h && <span style={{ color: C.dim }}>no historical record for this forecast yet</span>}
+          {h && h.hitRate == null && <span style={{ color: C.sub }}>too few historical {h.assetClass || ""} {f.dir} calls in the {h.bucket || "?"} bucket to judge (n={h.n ?? 0})</span>}
+          {h && h.hitRate != null && <>
+            <span style={{ color: C.sub }}>right <b style={{ color: (h.lift ?? 0) > 0 ? C.up : C.amber, fontSize: 12 }}>{pct(h.hitRate, 1)}</b> of the time</span>
+            <span style={{ color: C.sub }}>vs base <b style={{ color: C.text }}>{pct(h.baseRate, 1)}</b></span>
+            <span style={{ color: C.sub }}>lift <b style={{ color: h.lift == null ? C.text : h.lift > 0 ? C.up : C.amber }}>{h.lift == null ? "—" : (h.lift > 0 ? "+" : "") + (h.lift * 100).toFixed(1) + "pp"}</b></span>
+            <span style={{ color: C.sub }}>n <b style={{ color: C.text }}>{h.n != null ? h.n.toLocaleString("en-US") : "—"}</b></span>
+            {h.ci95 && h.ci95[0] != null && <span style={{ color: C.dim }}>95% CI {pct(h.ci95[0], 0)}–{pct(h.ci95[1], 0)}</span>}
+          </>}
+        </div>
+        {h && h.hitRate != null && <div style={{ marginTop: 6 }}><RateBar v={h.hitRate} base={h.baseRate} ci={h.ci95} dom={Math.max(0.12, Math.abs(h.hitRate - 0.5) * 1.3, Math.abs((h.baseRate ?? 0.5) - 0.5) * 1.3)} title={`hit ${pct(h.hitRate, 1)} · base ${pct(h.baseRate, 1)} · centre line = 50%`} /></div>}
+        {h && <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim, marginTop: 5, lineHeight: 1.5 }}>
+          {[h.bucket && `bucket ${h.bucket}`, h.horizon, h.assetClass, h.strengthHitRate != null && `${f.strength || "strength"} calls ${pct(h.strengthHitRate, 0)}${h.strengthN ? ` (n=${h.strengthN.toLocaleString("en-US")})` : ""}`].filter(Boolean).join(" · ")}
+          {h.basis && <div style={{ color: C.dim }}>basis: {h.basis}</div>}
+          {h.hitRate != null && <div><span style={{ color: C.warn }}>┃</span> base rate · <span style={{ color: C.sub }}>│</span> 50%{h.ci95 ? " · ─ 95% CI" : ""}</div>}
+        </div>}
+      </div>
+
+      {(f.topFor.length > 0 || f.topAgainst.length > 0) && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 12, marginTop: 10 }}>
+        <ReasonList title={`FOR ${f.dir}`} items={f.topFor} color={f.col} sigMap={sigMap} />
+        <ReasonList title="AGAINST" items={f.topAgainst} color={C.amber} sigMap={sigMap} />
+      </div>}
+
+      {f.text && <p style={{ margin: "10px 0 0", fontSize: 11.5, lineHeight: 1.5, color: C.text, borderLeft: `2px solid ${f.col}88`, paddingLeft: 9 }}>{f.text}</p>}
+      {f.note && <div style={{ marginTop: 6, fontFamily: MONO, fontSize: 10, color: C.amber }}>note: {f.note}</div>}
+      {why && <div style={{ marginTop: 8, padding: "5px 9px", border: `1px dashed ${C.borderHi}`, borderRadius: 6, fontFamily: MONO, fontSize: 10.5, color: C.sub }}>ⓘ {why}</div>}
+    </Panel>
+  );
+}
+
 // v2 model provenance / meta-label / relative rank (all optional).
 function MetaChip({ meta }) {
   const m = obj(meta); const p = num(m.pSuccess ?? m.p); const t = num(m.threshold);
@@ -211,7 +329,7 @@ export default function DetailPanel({ assetId, seed, provided, live, tick, minCo
     <div style={wrapStyle} className="de-in">
       {overlay && <div style={{ position: "sticky", top: -10, zIndex: 5, margin: "-10px -10px 10px", padding: "8px 10px", background: "rgba(6,7,13,.95)", backdropFilter: "blur(6px)", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 }}>
         <Btn small onClick={onClose}>← BACK</Btn>
-        <b style={{ fontFamily: MONO, fontSize: 13 }}>{d.symbol || assetId}</b><Chip action={d.action} size="sm" />
+        <b style={{ fontFamily: MONO, fontSize: 13 }}>{d.symbol || assetId}</b><Chip action={d.action} size="sm" /><DirBadge f={getForecast(d)} size="sm" />
         <span style={{ flex: 1 }} /><span style={{ fontFamily: MONO, fontSize: 12 }}>{fprice(tick?.price ?? d.price)}</span>
       </div>}
       <div style={{ display: "grid", gap: 10 }}>
@@ -256,6 +374,8 @@ export default function DetailPanel({ assetId, seed, provided, live, tick, minCo
           {d.summary && <p style={{ margin: "10px 0 0", fontSize: 12, lineHeight: 1.55, color: C.text }}>{d.summary}</p>}
           <div style={{ marginTop: 10 }}><FamilyStrip families={d.families} height={26} /></div>
         </Panel>
+
+        <ForecastBox d={d} />
 
         <Panel title={`Price · ${tfFor(d.horizon) === 900 ? "15m" : "1d"} bars`} pad={10} right={<span style={{ fontFamily: MONO, fontSize: 9, color: C.dim }}><span style={{ color: C.blue }}>━</span> EMA20 <span style={{ color: C.violet }}>━</span> EMA50 <span style={{ color: C.down }}>┅</span> stop <span style={{ color: C.up }}>┅</span> target</span>}>
           {cErr ? <ErrorBox err={cErr} onRetry={() => setNonce(n => n + 1)} /> : candles == null ? <Loading label="candles" /> : <CandleChart candles={liveCandles} levels={levels} height={overlay ? 260 : 300} />}

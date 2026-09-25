@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { C, MONO, Panel, Stat, Tag, Btn, Chip, ACTIONS, Loading, ErrorBox, Empty, num, pct, spct, ago, arr, obj, pick, clamp, divColor, colorSign } from "./ui.jsx";
 import { useMeasure } from "./charts.jsx";
 import { useSoft, Segmented, HORIZONS } from "./LabTab.jsx";
+import { getForecast, StrengthPips } from "./DecisionBoard.jsx";
 
 const CLASSES = [["stock", "STOCKS"], ["crypto", "CRYPTO"]];
 const BENCH = { stock: "SPY", crypto: "BTC" };
@@ -16,7 +17,7 @@ export function normRankings(data, cls) {
     return {
       ...r, assetId: id, symbol: r.symbol ?? (id ? String(id).split(":").pop() : "?"), assetClass: ac,
       _p: num(r.pOutperform ?? r.pOut ?? r.p), _e: num(r.expExRet ?? r.expectedExcessReturn ?? r.expExcess), _rank: num(r.rank), _a: normAction(r.action),
-      _rel: num(r.relScore), _pUp: num(r.pUp), _drv: arr(r.drivers).filter(x => typeof x === "string"),
+      _rel: num(r.relScore), _pUp: num(r.pUp), _drv: arr(r.drivers).filter(x => typeof x === "string"), _f: getForecast(r),
     };
   });
   if (rows.some(r => r.assetClass)) rows = rows.filter(r => !r.assetClass || r.assetClass === cls);
@@ -55,6 +56,19 @@ function ActionCell({ a, live }) {
   return <span style={{ color: C.dim, fontFamily: MONO, fontSize: 10 }}>—</span>;
 }
 
+// Directional forecast (▲/▼ + alignment). Falls back to the live decision's forecast, dimmed.
+function DirCell({ f, liveF, compact }) {
+  const x = f || liveF;
+  if (!x) return <span style={{ color: C.dim, fontFamily: MONO, fontSize: 10 }}>—</span>;
+  return (
+    <span title={`${f ? "" : "live decision's "}forecast ${x.dir}${x.strength ? " · " + x.strength : ""}${x.alignment != null ? ` · ${pct(x.alignment, 0)} of signal weight aligned` : ""}`}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4, color: x.col, fontFamily: MONO, fontSize: compact ? 10 : 11, fontWeight: 800, whiteSpace: "nowrap", opacity: f ? 1 : 0.6 }}>
+      {x.up ? "▲" : "▼"}<span>{x.alignment != null ? pct(x.alignment, 0) : x.dir}</span>
+      {!compact && x.strength && <StrengthPips f={x} showWord={false} />}
+    </span>
+  );
+}
+
 export default function RankingsTab({ defaultHorizon, decisions, onSelect, onOpenLab }) {
   const [cls, setCls] = useState(() => { try { return localStorage.getItem("de.rank.cls") || "stock"; } catch { return "stock"; } });
   useEffect(() => { try { localStorage.setItem("de.rank.cls", cls); } catch {} }, [cls]);
@@ -82,7 +96,7 @@ export default function RankingsTab({ defaultHorizon, decisions, onSelect, onOpe
   const model = obj(d.model ?? rows.find(r => r.model)?.model);
   const updated = pick(d, "ts", "built", "updatedAt", "asOf");
 
-  const grid = narrow ? "30px minmax(0, 1fr) auto" : "46px minmax(96px, 170px) minmax(120px, 1fr) 62px 84px 112px";
+  const grid = narrow ? "30px minmax(0, 1fr) auto" : "46px minmax(96px, 170px) minmax(120px, 1fr) 62px 84px 76px 112px";
   let crossed = false;
 
   return (
@@ -132,7 +146,7 @@ export default function RankingsTab({ defaultHorizon, decisions, onSelect, onOpe
       {rows.length > 0 && (
         <Panel title={`${cls === "crypto" ? "Crypto" : "Stocks"} · ${horizon}`} pad={10} right={<span style={{ fontFamily: MONO, fontSize: 9, color: C.dim }}>{fallback ? "bar centred on 0 = neutral relative score" : `bar centred on 50% = matches ${bench}`}</span>}>
           {!narrow && <div style={{ display: "grid", gridTemplateColumns: grid, gap: 10, padding: "0 8px 6px", fontFamily: MONO, fontSize: 9, color: C.dim, letterSpacing: 1, textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>
-            <span>rank</span><span>asset</span><span>{fallback ? "relative score" : "P(outperform)"}</span><span style={{ textAlign: "right" }}>{fallback ? "score" : "P"}</span><span style={{ textAlign: "right" }}>{hasE ? "E[excess]" : "P(up)"}</span><span style={{ textAlign: "right" }}>action</span>
+            <span>rank</span><span>asset</span><span>{fallback ? "relative score" : "P(outperform)"}</span><span style={{ textAlign: "right" }}>{fallback ? "score" : "P"}</span><span style={{ textAlign: "right" }}>{hasE ? "E[excess]" : "P(up)"}</span><span style={{ textAlign: "right" }} title="directional forecast: signals' consensus ▲/▼ and the share of signal weight aligned">forecast</span><span style={{ textAlign: "right" }}>action</span>
           </div>}
           <div style={{ display: "grid" }}>
             {rows.map((r, i) => {
@@ -152,7 +166,7 @@ export default function RankingsTab({ defaultHorizon, decisions, onSelect, onOpe
                     {narrow ? (
                       <div style={{ minWidth: 0 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "baseline" }}>
-                          <b style={{ fontSize: 12, color: C.text }}>{r.symbol}</b>
+                          <span style={{ display: "inline-flex", gap: 6, alignItems: "baseline", minWidth: 0 }}><b style={{ fontSize: 12, color: C.text }}>{r.symbol}</b><DirCell f={r._f} liveF={getForecast(live)} compact /></span>
                           <span style={{ fontSize: 10, color: C.text }}>{fallback ? snumFmt(r._rel) : pct(r._p, 1)} {hasE ? <span style={{ color: colorSign(r._e) }}>{spct(r._e, 2)}</span> : <span style={{ color: C.dim }}>P↑ {pct(r._pUp, 0)}</span>}</span>
                         </div>
                         <div style={{ marginTop: 4 }}>{fallback ? <RelBar v={r._rel} dom={relDom} h={6} /> : <OutBar p={r._p} dom={dom} h={6} />}</div>
@@ -166,6 +180,7 @@ export default function RankingsTab({ defaultHorizon, decisions, onSelect, onOpe
                       <span style={{ fontSize: 11, textAlign: "right", color: C.text, fontWeight: 700 }}>{fallback ? snumFmt(r._rel) : pct(r._p, 1)}</span>
                       {hasE ? <span style={{ fontSize: 11, textAlign: "right", color: colorSign(r._e) }}>{spct(r._e, 2)}</span>
                         : <span style={{ fontSize: 11, textAlign: "right", color: C.sub }}>{pct(r._pUp, 1)}</span>}
+                      <span style={{ textAlign: "right" }}><DirCell f={r._f} liveF={getForecast(live)} /></span>
                     </>}
                     <span style={{ textAlign: "right" }}><ActionCell a={r._a} live={live?.action} /></span>
                   </div>
@@ -175,7 +190,7 @@ export default function RankingsTab({ defaultHorizon, decisions, onSelect, onOpe
           </div>
           <div style={{ fontFamily: MONO, fontSize: 9, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
             {fallback ? `Relative score = the relative family's pooled score·confidence (relative strength, cross-sectional momentum, reversal, idio-vol), used until a yEx stacker is promoted.` : `P(outperform) = calibrated P(excess return vs ${bench} > 0) over the horizon.`}
-            {hasE ? " E[excess] is the model's expected return net of the benchmark." : " P(up) is the absolute direction probability, gated the same way as the live board."} Rows that are live on the board open their decision.
+            {hasE ? " E[excess] is the model's expected return net of the benchmark." : " P(up) is the absolute direction probability, gated the same way as the live board."} Forecast = the signals' consensus direction (▲/▼) and the share of signal weight aligned with it; it is always given, unlike the gated action. Rows that are live on the board open their decision.
           </div>
         </Panel>
       )}
