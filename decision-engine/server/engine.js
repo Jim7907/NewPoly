@@ -141,10 +141,13 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
   // v2 model layer: report-card mask → point-in-time row → promoted stacker / meta-labeler.
   const masked = brain.applyMask(signals, horizon);
   const atrPct = price > 0 && atr ? atr / price : null;
-  const pit = brain.pitSignals(masked, hc.tf);
+  // The offline models see what the dataset saw: UNMASKED point-in-time signals (each stacker
+  // stores and applies its own mask) and pRaw pooled from that same subset.
+  const pit = brain.pitSignals(signals, hc.tf);
   const pitDecision = ensemble.decide({ asset, signals: pit, regime, horizon, price, atr, candles, now: Date.now() });
-  const row = brain.liveRow(asset, masked, { regime, atrPct, annVol: regime?.annVol ?? null, pRaw: pitDecision.pRaw, tfSec: hc.tf });
-  const preds = brain.predict(horizon, row);
+  const row = brain.liveRow(asset, signals, { regime, atrPct, annVol: regime?.annVol ?? null, pRaw: pitDecision.pRaw, tfSec: hc.tf });
+  const calC = calibrators[ckey(horizon, asset.assetClass)];
+  const preds = brain.predict(horizon, row, { pooledP: calC ? calC.apply(pitDecision.pRaw) : undefined });
   const dr = brain.derisk();
   const th = { ...thresholds(), ...brain.thresholdsOverride(horizon) };
   if (dr) { th.MIN_CONFIDENCE += dr.minConfidenceBump ?? 0.05; th.DERISK_BUMP = dr.minConfidenceBump ?? 0.05; }
@@ -273,9 +276,9 @@ async function rankings({ horizon = currentHorizon(), cls = "stock", maxAgeMs = 
     const price = candles.at(-1).c;
     const atrA = ind.atr(candles, 14); const atr = atrA.at(-1);
     const cal = calibrators[ckey(horizon, asset.assetClass)] || null;
-    const pitD = ensemble.decide({ asset, signals: brain.pitSignals(masked, hc.tf), regime, horizon, price, atr, candles });
-    const row0 = brain.liveRow(asset, masked, { regime, atrPct: atr / price, annVol: regime?.annVol ?? null, pRaw: pitD.pRaw, tfSec: hc.tf });
-    const preds0 = brain.predict(horizon, row0);
+    const pitD = ensemble.decide({ asset, signals: brain.pitSignals(sigs, hc.tf), regime, horizon, price, atr, candles });
+    const row0 = brain.liveRow(asset, sigs, { regime, atrPct: atr / price, annVol: regime?.annVol ?? null, pRaw: pitD.pRaw, tfSec: hc.tf });
+    const preds0 = brain.predict(horizon, row0, { pooledP: cal ? cal.apply(pitD.pRaw) : undefined });
     // Same gating as the live board (calibrator + base-rate guard + promoted models), so the two views agree.
     const d0 = ensemble.decide({ asset, signals: masked, regime, horizon, price, atr, candles, calibrator: cal, baseRate: cal?.baseRate,
       thresholds: { ...thresholds(), ...brain.thresholdsOverride(horizon) }, probability: preds0.probability, meta: preds0.meta });

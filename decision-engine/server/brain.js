@@ -101,7 +101,9 @@ function liveRow(asset, signals, { regime, atrPct, annVol, pRaw, tfSec }) {
 }
 
 // ── Predictions from promoted models ──
-function predict(horizon, row) {
+// opts.pooledP: v1 pooled pRaw (point-in-time subset) passed through the engine's class calibrator —
+// the primary a "pooled" meta-labeler was trained on.
+function predict(horizon, row, opts = {}) {
   reload();
   const c = champs[horizon];
   if (!c) return {};
@@ -116,8 +118,15 @@ function predict(horizon, row) {
   const ex = run("yEx"); if (ex) out.relative = { pOutperform: ex.p, baseRate: ex.baseRate, version: ex.version };
   const tb = run("tbLong"); if (tb) out.targetFirst = { p: tb.p, version: tb.version };
   if (c.meta) {
-    const p = out.probability?.pUp ?? row.pRaw;
-    const base = out.probability?.baseRate ?? 0.5;
+    // Feed the meta-labeler the SAME primary it was trained on; if that primary isn't available
+    // live, serve no meta rather than a mismatched one.
+    const mm = c.meta.model;
+    let p = null, base = null;
+    if (mm.primary === "stacker") {
+      const prim = run(mm.primaryTarget || "y");
+      if (prim) { p = prim.p; base = prim.baseRate ?? mm.primaryBaseRate; }
+    } else if (Number.isFinite(opts.pooledP)) { p = opts.pooledP; base = mm.primaryBaseRate ?? 0.5; }
+    if (p == null) return out;
     const side = p >= base ? 1 : -1;
     try {
       const ps = Number(c.meta.model.predict(row, side, p));
