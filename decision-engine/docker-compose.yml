@@ -1,0 +1,27 @@
+services:
+  decision-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: decision-engine
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - DB_PATH=/app/data
+    volumes:
+      - decision_engine_data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  decision_engine_data:
+    driver: local
