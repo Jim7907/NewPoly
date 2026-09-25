@@ -54,7 +54,14 @@ npm run analyze -- BTC NVDA   # one-shot decisions in the terminal
 npm run backtest -- --symbol BTC --class crypto --horizon swing
 ```
 
-Docker: `docker compose up --build -d` then open `http://<host>:3003`.
+## Deploy to a VPS (gives you a dashboard URL)
+
+On the VPS (Docker recommended):
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jim7907/NewPoly/claude/ai-trading-decision-engine-kksxds/decision-engine/deploy.sh | bash
+```
+Then open `http://<vps-ip>:3003` (open port 3003 in the firewall, and ideally put it behind
+nginx/Caddy with TLS). Data persists in the `decision_engine_data` Docker volume. Re-run the script to update.
 
 ## Horizons
 
