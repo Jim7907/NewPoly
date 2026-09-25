@@ -135,18 +135,14 @@ app.post("/api/backtest", async (req, res) => {
   const horizon = cfg.HORIZONS[req.body?.horizon] ? req.body.horizon : engine.currentHorizon();
   if (!asset) return res.status(400).json({ error: "unknown asset" });
   try {
-    const backtest = require("./learning/backtest");
-    const hc = cfg.HORIZONS[horizon];
-    const candles = await data.candles(asset, hc.tf, Math.max(hc.history, 1000));
-    if (!candles || candles.length < 300) return res.status(400).json({ error: `not enough history (${candles?.length || 0} bars)` });
-    const result = await backtest.run({ candles, asset, horizon, cfg });
-    const out = { ...result, assetId: asset.id, horizon, bars: candles.length, ts: new Date().toISOString() };
+    const { runInWorker } = require("./learning/worker");
+    const result = await runInWorker({ asset, horizon, opts: { useML: req.body?.useML !== false } });
+    const out = { ...result, assetId: asset.id, horizon, ts: new Date().toISOString() };
     db.saveBacktest(asset.id, horizon, out);
     res.json(out);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get("/api/settings", (req, res) => res.json({ settings: db.getAllSettings(), thresholds: engine.thresholds() }));
 app.post("/api/settings", (req, res) => {
   const allowed = ["min_confidence", "min_prob_edge", "min_agreement", "horizon", "auto_trade", "scan_active", "llm_enabled"];
   for (const [k, v] of Object.entries(req.body || {})) {

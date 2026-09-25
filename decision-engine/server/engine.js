@@ -176,17 +176,16 @@ async function resolveDue(nowMs = Date.now()) {
 
 // ── Warm start from walk-forward backtests ──
 async function warmStart({ horizon = currentHorizon(), log = console.log } = {}) {
-  const backtest = require("./learning/backtest");
-  const hc = H(horizon);
+  const { runInWorker } = require("./learning/worker");
   const pairs = [];
   for (const asset of cfg.ASSETS) {
     try {
-      const candles = await data.candles(asset, hc.tf, Math.max(hc.history, 1000));
-      if (!candles || candles.length < 300) continue;
-      const res = await backtest.run({ candles, asset, horizon, cfg });
-      db.saveBacktest(asset.id, horizon, { ...res, candles: undefined });
+      // Technical + regime only (ML has its own purged walk-forward inside ml.signals); regime
+      // re-detected every 5 bars to keep this to seconds per asset. Runs in a worker thread.
+      const res = await runInWorker({ asset, horizon, opts: { useML: false, regimeEvery: 5 } });
+      db.saveBacktest(asset.id, horizon, { ...res, assetId: asset.id, horizon, warm: true, ts: new Date().toISOString() });
       pairs.push(...(res.calibrationPairs || []));
-      learner.seed?.(res.signalStats || {});
+      learner.seed(res.signalStats || {});
       log(`[warm] ${asset.symbol} ${horizon}: ${res.metrics?.nTrades ?? 0} trades, hit ${(100 * (res.metrics?.hitRate || 0)).toFixed(1)}%, pairs ${res.calibrationPairs?.length || 0}`);
     } catch (e) { log(`[warm] ${asset.symbol}: ${e.message}`); }
   }
@@ -216,7 +215,7 @@ const perfReport = () => {
   const h = currentHorizon();
   const pairs = res.filter(d => d.horizon === h).map(d => ({ p: d.pUp, y: d.y }));
   let calibration = null;
-  try { const c = new Calibrator(); calibration = pairs.length ? (c.fit(pairs), c.reliability()) : null; } catch { /* ignore */ }
+  try { calibration = pairs.length ? Calibrator.reliabilityOf(pairs) : null; } catch { /* ignore */ }
   return {
     horizon: h, nResolved: res.length, calibration,
     calibrator: calibrators[h]?.reliability?.() || null,

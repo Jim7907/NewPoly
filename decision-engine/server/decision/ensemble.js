@@ -420,7 +420,7 @@ function decide(input = {}, opts = {}) {
     if (agreement < th.MIN_AGREEMENT) fails.push(`agreement ${agreement.toFixed(2)} < ${th.MIN_AGREEMENT}`);
     const isExit = lean < 0 && held;
     if (!fails.length && br && !isExit && br.eGross < PARAMS.COST_GATE_MULT * costFrac)
-      fails.push(`expected move ${(br.eGross * 100).toFixed(2)}% < ${PARAMS.COST_GATE_MULT}× round-trip cost ${(costFrac * 100).toFixed(2)}%`);
+      fails.push(`expected move ${(br.eGross * 100).toFixed(2)}% < ${(PARAMS.COST_GATE_MULT * costFrac * 100).toFixed(2)}% (${PARAMS.COST_GATE_MULT}× round-trip cost ${(costFrac * 100).toFixed(2)}%)`);
   }
   let action = "HOLD";
   if (!fails.length) {
