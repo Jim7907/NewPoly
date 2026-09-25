@@ -100,30 +100,54 @@ function neweyWestVariance(x, lag = 0) {
 }
 
 /**
- * Diebold–Mariano (1995) test on a loss-differential series d_t = L_reference,t − L_model,t
- * (positive mean ⇒ the model forecasts better). Variance: Newey–West HAC with `lag`; small-sample
- * correction of Harvey, Leybourne & Newbold (1997) with forecast horizon h (default lag, min 1).
- * Returns { stat, p (two-sided), pGreater (H1: E[d] > 0), n, meanDiff, se, lag }.
+ * Diebold–Mariano (1995) test on a loss-differential series d_i = L_reference,i − L_model,i
+ * (positive mean ⇒ the model forecasts better).
+ *  • time series (no `dates`): se² = NW(d, lag) / n.
+ *  • panel (`dates`, one per element): Driscoll–Kraay — the demeaned differentials are SUMMED per
+ *    date, a Newey–West (Bartlett, `lag` dates) long-run variance is taken over the date series and
+ *    se = √LRV / n. Absorbs the cross-sectional correlation of same-date outcomes and label overlap.
+ * Harvey, Leybourne & Newbold (1997) small-sample factor with h = max(1, h ?? lag) over the number
+ * of dates T; normal p-values. Returns { stat, p (two-sided), pGreater (H1: E[d] > 0), n, nDates,
+ * meanDiff, se, lag }.
  */
-function dieboldMariano(d, { lag = 0, h, hln = true } = {}) {
-  const a = (Array.isArray(d) ? d : []).filter(fin);
+function dieboldMariano(d, { lag = 0, h, hln = true, dates = null } = {}) {
+  const a = [], dt = [];
+  const src = Array.isArray(d) ? d : [];
+  for (let i = 0; i < src.length; i++) if (fin(src[i])) { a.push(src[i]); dt.push(dates ? dates[i] : i); }
   const n = a.length;
   let m = 0;
   for (const v of a) m += v;
   m = n ? m / n : 0;
-  if (n < 3) return { stat: 0, p: 1, pGreater: 0.5, n, meanDiff: m, se: null, lag };
-  const lrv = neweyWestVariance(a, lag);
-  const se = Math.sqrt(lrv / n);
+  const empty = { stat: 0, p: 1, pGreater: 0.5, n, nDates: 0, meanDiff: m, se: null, lag };
+  if (n < 3) return empty;
+  let T, lrvSum;
+  if (dates) {
+    const by = new Map();
+    for (let i = 0; i < n; i++) by.set(dt[i], (by.get(dt[i]) || 0) + (a[i] - m));
+    const S = [...by.keys()].sort((x, y) => x - y).map((k) => by.get(k));
+    T = S.length;
+    if (T < 3) return { ...empty, nDates: T };
+    const L = Math.max(0, Math.min(Math.floor(lag) || 0, T - 2));
+    let g0 = 0;
+    for (const v of S) g0 += v * v;
+    lrvSum = g0;
+    for (let l = 1; l <= L; l++) { let g = 0; for (let t = l; t < T; t++) g += S[t] * S[t - l]; lrvSum += 2 * (1 - l / (L + 1)) * g; }
+    if (!(lrvSum > 0)) lrvSum = g0;
+  } else {
+    T = n;
+    lrvSum = neweyWestVariance(a, lag) * n;
+  }
+  const se = Math.sqrt(Math.max(0, lrvSum)) / n;
   let stat;
   if (!(se > 1e-15)) stat = m > 0 ? Infinity : m < 0 ? -Infinity : 0;
   else stat = m / se;
   if (hln && Number.isFinite(stat)) {
     const hh = Math.max(1, Math.floor(h ?? lag) || 1);
-    stat *= Math.sqrt(Math.max(0, (n + 1 - 2 * hh + (hh * (hh - 1)) / n) / n));
+    stat *= Math.sqrt(Math.max(0, (T + 1 - 2 * hh + (hh * (hh - 1)) / T) / T));
   }
   const p = stat === 0 ? 1 : Number.isFinite(stat) ? 2 * (1 - normCdf(Math.abs(stat))) : 0;
   const pGreater = Number.isFinite(stat) ? 1 - normCdf(stat) : stat > 0 ? 0 : 1;
-  return { stat, p: Math.min(1, Math.max(0, p)), pGreater, n, meanDiff: m, se, lag };
+  return { stat, p: Math.min(1, Math.max(0, p)), pGreater, n, nDates: T, meanDiff: m, se, lag };
 }
 
 // ───────────────────────────── Sharpe-ratio inference ─────────────────────────────

@@ -10,7 +10,7 @@
 //    individually (a random row split would put NVDA-Tuesday in test and AMD-Tuesday in train with
 //    the same market move in both labels).
 //  * PURGE. A row's label window is [t, tEnd] where tEnd is the time of the bar `ahead` bars later
-//    FOR THAT ASSET (looked up exactly from the dataset: row.i + ahead). This matters for stocks: 5
+//    FOR THAT ASSET (row.lab.tEnd from the dataset builder, else looked up via row.i + ahead). This matters for stocks: 5
 //    daily bars span 7+ calendar days across a weekend/holiday, so the naive t + ahead·tf would
 //    under-purge. Rows without an index fall back to a conservative calendar estimate.
 //    For a test block starting at date T the model trains ONLY on rows with tEnd < T − embargo.
@@ -121,6 +121,7 @@ const clipP = p => clamp(Number.isFinite(p) ? p : 0.5, 1e-6, 1 - 1e-6);
 const logloss1 = (p, y) => { const q = clipP(p); return y ? -Math.log(q) : -Math.log(1 - q); };
 const mean = a => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
 const r6 = x => (Number.isFinite(x) ? +x.toFixed(6) : null);
+const toNum = v => (v === null || v === undefined || v === "" || typeof v === "boolean" ? NaN : Number(v)); // Number(null) is 0!
 
 function familyOf(id) {
   const p = String(id).split(".")[0];
@@ -147,15 +148,19 @@ function sortRows(rows) {
   return r;
 }
 
-/** [score, conf] from a dataset pair [s, c], a Signal-like {score, confidence} or a bare number. */
-function sigPair(v) {
+/**
+ * [score, conf] from a dataset pair [s, c], a Signal-like {score, confidence} or a bare number.
+ * conf is clamped to [0, cMax]: 1 for raw confidences, 2 for rows already multiplied by a mask
+ * (keep-verdict multipliers go up to 1.5).
+ */
+function sigPair(v, cMax = 1) {
   let s, c;
-  if (Array.isArray(v)) { s = Number(v[0]); c = v.length > 1 ? Number(v[1]) : 1; }
-  else if (v && typeof v === "object") { s = Number(v.score); c = v.confidence != null ? Number(v.confidence) : v.conf != null ? Number(v.conf) : 1; }
+  if (Array.isArray(v)) { s = toNum(v[0]); c = v.length > 1 ? toNum(v[1]) : 1; }
+  else if (v && typeof v === "object") { s = toNum(v.score); c = v.confidence != null ? toNum(v.confidence) : v.conf != null ? toNum(v.conf) : 1; }
   else if (typeof v === "number") { s = v; c = 1; }
   else return null;
   if (!Number.isFinite(s)) return null;
-  return [clamp(s, -1, 1), Number.isFinite(c) ? clamp(c, 0, 1) : 0];
+  return [clamp(s, -1, 1), Number.isFinite(c) ? clamp(c, 0, cMax) : 0];
 }
 
 // ─── labels ──────────────────────────────────────────────────────────────────────────────────
@@ -183,16 +188,19 @@ function labelOf(row, target) {
 
 // ─── label windows ───────────────────────────────────────────────────────────────────────────
 /**
- * Label end time (ms) for every row: the time of the same asset's bar `ahead` bars later
- * (row.i + ahead), looked up in `rows` — exact when that bar is a row, otherwise the first later
+ * Label end time (ms) for every row. With useLabEnd (default) a finite row.lab.tEnd written by
+ * the dataset builder (time of bar i + ahead) is used as is. Otherwise: the time of the same
+ * asset's bar `ahead` bars later (row.i + ahead), looked up in `rows` — exact when that bar is a
+ * row, otherwise the first later
  * row of the asset (an upper bound, i.e. conservative for purging, e.g. with stride > 1). Rows at
  * the end of an asset's history or without `i` use a conservative calendar estimate: crypto
  * t + ahead·tf; stocks daily t + ceil(ahead·7/5) days + 2 days (weekends + holidays); stocks
  * intraday t + ahead·tf + 3 days. Pass the FULL dataset rows (unlabelled tail included).
  */
-function computeLabelEnds(rows, { ahead = 5, tf = 86400 } = {}) {
+function computeLabelEnds(rows, { ahead = 5, tf = 86400, useLabEnd = true } = {}) {
   const n = rows.length, tfMs = tf * 1000;
   const ends = new Float64Array(n);
+  const labEnd = r => (useLabEnd && r.lab && isNum(r.lab.tEnd) && r.lab.tEnd >= r.t ? r.lab.tEnd : null);
   const fallback = r => {
     const stock = normClass(r.assetClass) === "stock";
     if (!stock) return r.t + ahead * tfMs;
@@ -218,6 +226,7 @@ function computeLabelEnds(rows, { ahead = 5, tf = 86400 } = {}) {
       ends[g[q]] = lo < g.length ? Math.max(rows[g[lo]].t, r.t + 1) : fallback(r);
     }
   }
+  for (let k = 0; k < n; k++) { const e = labEnd(rows[k]); if (e !== null) ends[k] = e; }
   return ends;
 }
 
@@ -392,12 +401,13 @@ function featurize(row, spec) {
   const aux = specAux(spec);
   const sig = row.sig && typeof row.sig === "object" ? row.sig : {};
   const mask = row.masked ? null : spec.mask;
+  const cMax = row.masked ? 2 : 1;
   const ids = spec.signalIds, nf = spec.families.length;
   const fSum = new Float64Array(nf), fCnt = new Int32Array(nf);
   for (let j = 0; j < ids.length; j++) {
     const raw = sig[ids[j]];
     if (raw == null) continue;
-    const pr = sigPair(raw);
+    const pr = sigPair(raw, cMax);
     if (!pr) continue;
     let m = 1;
     if (mask) { const mv = mask[ids[j]]; if (mv != null && Number.isFinite(mv)) m = mv; }
@@ -416,9 +426,9 @@ function featurize(row, spec) {
   for (let c = 0; c < spec.classes.length; c++) x[o + c] = spec.classes[c] === cls ? 1 : 0;
   o += spec.classes.length;
   const wz = (v, w) => (isNum(v) ? clamp(v, w[0], w[1]) : w[2]);
-  x[o++] = wz(Number(row.atrPct), spec.winsor.atrPct);
-  x[o++] = wz(Number(row.annVol), spec.winsor.annVol);
-  const pr = Number(row.pRaw);
+  x[o++] = wz(toNum(row.atrPct), spec.winsor.atrPct);
+  x[o++] = wz(toNum(row.annVol), spec.winsor.annVol);
+  const pr = toNum(row.pRaw);
   x[o++] = Number.isFinite(pr) ? logit(clamp(pr, 0.01, 0.99)) : 0;
   return x;
 }
@@ -791,7 +801,7 @@ class Stacker {
  */
 function prepareRows(dataset, target, { ahead, tf }) {
   const all = sortRows(dataset.rows);
-  const endsAll = computeLabelEnds(all, { ahead, tf });
+  const endsAll = computeLabelEnds(all, { ahead, tf, useLabEnd: !dataset.ahead || ahead === dataset.ahead });
   const bench = new Set(Object.values(dataset.benchmarks || {}));
   const rows = [], y = [], ends = [];
   for (let k = 0; k < all.length; k++) {
@@ -925,7 +935,7 @@ function trainStacker(dataset, opts = {}) {
       t: o.t, assetId: o.assetId, p: o.p, y: o.y, pBaseline: o.pBaseline, pBase: o.pBase, pCal: o.pCal,
       pLog: o.pLog, pGbm: o.pGbm, pRaw: o.pRaw, fold: o.fold, tEnd: o.tEnd,
     })),
-    metrics, trainedThrough, labelsThrough: Math.max(...ends), params,
+    metrics, trainedThrough, labelsThrough: ends.reduce((a, v) => (v > a ? v : a), -Infinity), params,
     timing: { ms: Date.now() - started, finalMs: Date.now() - tFinal, foldsMs: perFold.map(f => f.ms) },
   };
 }
@@ -1034,6 +1044,7 @@ function synthDataset(opts = {}) {
       lab = {
         ret: +ret.toFixed(6), exRet: +exRet.toFixed(6), y: ret > 0 ? 1 : 0, yEx: exRet > 0 ? 1 : 0,
         tbLong: tb(ret), tbShort: tb(-ret), tbLongRet: +tbRet(ret).toFixed(6), tbShortRet: +tbRet(-ret).toFixed(6),
+        tEnd: t0 + (q.d + ahead) * DAY_MS,
       };
     }
     const fam = {};

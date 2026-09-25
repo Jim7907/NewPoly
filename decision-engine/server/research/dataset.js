@@ -265,11 +265,29 @@ function labelAt(job, k, atr) {
 }
 
 // ───────────────────────────── per-asset computation (pure given a job) ─────────────────────────────
-// job = { asset, horizon, tf, ahead, bracket, costRT, lookback, peerLookback, warmup, stride,
-//         regimeEvery, staleMs, ppy, candles, peers:[{symbol, candles, times}], bench:{candles,times}|null,
-//         isBenchmark, iOffset, kFrom, kTo, macro(prepped), fng(prepped), relative(bool),
-//         expectedFamilies, relOverride? }
-function computeAssetRows(job, relMod, onRow) {
+// A job holds settings and ids only; candles live once per thread in `env.series`
+// ({ id → { asset, candles, times } }) so peers are not copied into every job.
+// job = { assetId, peerIds, benchId, isBenchmark, horizon, tf, ahead, bracket, costRT, lookback,
+//         peerLookback, warmup, stride, regimeEvery, staleMs, ppy, iOffset, kFrom, kTo, relative,
+//         expectedFamilies }
+// env = { series, macro, fng, memo: { macro, fng }, relCache }
+function makeEnv(shared) {
+  const series = new Map();
+  for (const [id, v] of Object.entries(shared.series || {})) series.set(id, { asset: v.asset, candles: v.candles, times: v.candles.map((c) => c.t) });
+  return { series, macro: shared.macro, fng: shared.fng, memo: { macro: new Map(), fng: new Map() }, relCache: new Map() };
+}
+function resolveJob(job, env) {
+  const own = env.series.get(job.assetId);
+  const bench = !job.isBenchmark && job.benchId ? env.series.get(job.benchId) : null;
+  return {
+    ...job, asset: own.asset, candles: own.candles, times: own.times,
+    peers: (job.peerIds || []).map((id) => env.series.get(id)).filter((p) => p && p.candles.length).map((p) => ({ symbol: p.asset.symbol, candles: p.candles, times: p.times })),
+    bench: bench && bench.candles.length ? { candles: bench.candles, times: bench.times } : null,
+  };
+}
+
+function computeAssetRows(jobIn, env, relMod, onRow) {
+  const job = resolveJob(jobIn, env);
   const cs = job.candles;
   const n = cs.length;
   const asset = job.asset;
@@ -278,7 +296,7 @@ function computeAssetRows(job, relMod, onRow) {
   const closes = cs.map((c) => c.c);
   const atrA = I.atr(cs, 14);
   const rv = I.realizedVol(closes, 20);
-  const ctx = { macro: job.macro, fng: job.fng, memo: job.memo };
+  const ctx = { macro: env.macro, fng: env.fng, memo: env.memo };
   const E = Math.max(1, job.regimeEvery | 0);
   const rows = [];
   const signalFamily = {};
@@ -286,6 +304,17 @@ function computeAssetRows(job, relMod, onRow) {
   const st = { regimeAt: null, regime: null };
   const safe = (name, fn) => { try { return fn(); } catch (e) { errors[name] = (errors[name] || 0) + 1; return null; } };
   const windowAt = (k) => cs.slice(Math.max(0, k + 1 - job.lookback), k + 1);
+  const useRel = !!(relMod && job.relative);
+  const relCache = useRel && env.relCache ? env.relCache : null;
+  if (useRel && relCache && n > 1 && job.kFrom <= job.kTo) {
+    // Prime relative.js's series cache with the full histories: every later call passes windows
+    // that are contiguous sub-ranges of these, which the module reuses (views are bounded by the
+    // window's last bar, so this changes speed, not results — see the point-in-time test).
+    const peers = {};
+    for (const p of job.peers) peers[p.symbol] = p.candles;
+    safe("relativePrime", () => relMod.signals(cs, { peers, benchmark: job.isBenchmark ? cs : job.bench ? job.bench.candles : cs,
+      assetClass: cls, horizon: job.horizon, symbol: asset.symbol, etf: !!asset.etf, t: cs[n - 1].t, cache: relCache }));
+  }
 
   for (let k = job.kFrom; k <= job.kTo && k < n; k += job.stride) {
     const bar = cs[k];
@@ -308,7 +337,7 @@ function computeAssetRows(job, relMod, onRow) {
     if (regime) push(safe("regimeSignals", () => regimeMod.signals(regime)));
     push(safe("macro", () => macroSignalsAt(ctx, asset, t)));
     if (cls === "crypto") push(safe("fearGreed", () => fngSignalsAt(ctx, t)));
-    if (relMod && job.relative) {
+    if (useRel) {
       push(safe("relative", () => {
         const peers = {};
         for (const p of job.peers) {
@@ -323,7 +352,7 @@ function computeAssetRows(job, relMod, onRow) {
           if (j >= 0 && t - job.bench.times[j] <= job.staleMs) benchmark = job.bench.candles.slice(Math.max(0, j + 1 - job.peerLookback), j + 1);
         }
         if (!benchmark) return [];
-        return relMod.signals(window, { peers, benchmark, assetClass: cls, horizon: job.horizon, symbol: asset.symbol, t });
+        return relMod.signals(window, { peers, benchmark, assetClass: cls, horizon: job.horizon, symbol: asset.symbol, etf: !!asset.etf, t, cache: relCache });
       }));
     }
 
@@ -409,34 +438,27 @@ function prepAssetData(assets, candlesByAsset) {
   }
   return data;
 }
+const sharedSeries = (data) => Object.fromEntries([...data].map(([id, d]) => [id, { asset: d.asset, candles: d.candles }]));
 
 function buildJob(S, cfg, a, data, extra) {
   const d = data.get(a.id);
   const cls = a.assetClass;
   const benchId = BENCHMARKS[cls];
   const isBenchmark = a.id === benchId;
-  const bd = !isBenchmark ? data.get(benchId) : null;
-  const peers = [];
-  for (const [id, p] of data) if (id !== a.id && p.asset.assetClass === cls && p.candles.length) peers.push({ symbol: p.asset.symbol, candles: p.candles, times: p.times });
+  const peerIds = [];
+  for (const [id, p] of data) if (id !== a.id && p.asset.assetClass === cls && p.candles.length) peerIds.push(id);
   return {
-    asset: a, horizon: S.horizon, tf: S.tf, ahead: S.ahead, bracket: S.bracket, costRT: roundTripCost(cfg, cls),
+    assetId: a.id, peerIds, benchId: data.has(benchId) ? benchId : null, isBenchmark,
+    horizon: S.horizon, tf: S.tf, ahead: S.ahead, bracket: S.bracket, costRT: roundTripCost(cfg, cls),
     lookback: S.lookback, peerLookback: S.peerLookback, warmup: S.warmup, stride: S.stride, regimeEvery: S.regimeEvery,
     staleMs: S.staleMs, ppy: periodsPerYear(S.tf, cls),
-    candles: d.candles, peers, bench: bd && bd.candles.length ? { candles: bd.candles, times: bd.times } : null, isBenchmark,
     expectedFamilies: extra.expectedFamilies[cls], relative: extra.relative,
     iOffset: 0, kFrom: S.warmup, kTo: d.candles.length - 1,
-    ...extra.override,
   };
 }
 
 // ───────────────────────────── execution (in-process or worker threads) ─────────────────────────────
-function runJobsInProcess(jobs, shared, relMod, onRow) {
-  const out = [];
-  const memo = { macro: new Map(), fng: new Map() };
-  for (const job of jobs) out.push(computeAssetRows({ ...job, macro: shared.macro, fng: shared.fng, memo }, relMod, onRow));
-  return out;
-}
-
+// shared = { series: { id → { asset, candles } }, macro, fng } — sent once per worker.
 function runJobsInWorkers(jobs, shared, nWorkers, onRowCount) {
   // Balance by number of rows to compute (greedy longest-first).
   const buckets = Array.from({ length: nWorkers }, () => ({ load: 0, idx: [] }));
@@ -444,38 +466,41 @@ function runJobsInWorkers(jobs, shared, nWorkers, onRowCount) {
   for (const o of order) { buckets.sort((a, b) => a.load - b.load); buckets[0].load += o.load; buckets[0].idx.push(o.idx); }
   const results = new Array(jobs.length);
   const tasks = buckets.filter((b) => b.idx.length).map((b) => new Promise((resolve) => {
-    const payload = { __researchDatasetWorker: true, jobs: b.idx.map((k) => jobs[k]), macro: shared.macro, fng: shared.fng };
     let settled = false, got = 0;
     const fallback = (why) => {
       if (settled) return; settled = true;
       // Recompute whatever this worker did not deliver, in-process (same results, just slower).
       const missing = b.idx.filter((k) => !results[k]);
+      const env = makeEnv(shared);
       const rel = loadRelative();
-      const res = runJobsInProcess(missing.map((k) => jobs[k]), shared, rel, () => onRowCount(1));
-      missing.forEach((k, m) => { results[k] = res[m]; results[k].errors = { ...(results[k].errors || {}), worker: why }; });
+      for (const k of missing) {
+        results[k] = computeAssetRows(jobs[k], env, rel, () => onRowCount(1));
+        results[k].errors = { ...(results[k].errors || {}), worker: why };
+      }
       resolve();
     };
     let w;
-    try { w = new Worker(__filename, { workerData: payload }); } catch (e) { fallback(String(e && e.message || e)); return; }
+    try { w = new Worker(__filename, { workerData: { __researchDatasetWorker: true, jobs: b.idx.map((k) => jobs[k]), shared } }); }
+    catch (e) { fallback(String((e && e.message) || e)); return; }
     w.on("message", (m) => {
       if (!m) return;
       if (m.type === "progress") onRowCount(m.n);
       else if (m.type === "result") { results[b.idx[m.j]] = m.result; got++; }
       else if (m.type === "done") { settled = true; resolve(); }
     });
-    w.on("error", (e) => fallback(String(e && e.message || e)));
+    w.on("error", (e) => fallback(String((e && e.message) || e)));
     w.on("exit", (code) => { if (!settled) { if (got === b.idx.length) { settled = true; resolve(); } else fallback(`worker exit ${code}`); } });
   }));
   return Promise.all(tasks).then(() => results);
 }
 
 if (!isMainThread && workerData && workerData.__researchDatasetWorker) {
-  const { jobs, macro, fng } = workerData;
+  const { jobs, shared } = workerData;
+  const env = makeEnv(shared);
   const rel = loadRelative();
-  const memo = { macro: new Map(), fng: new Map() };
   let pending = 0;
   jobs.forEach((job, j) => {
-    const result = computeAssetRows({ ...job, macro, fng, memo }, rel, () => {
+    const result = computeAssetRows(job, env, rel, () => {
       if (++pending >= 25) { parentPort.postMessage({ type: "progress", n: pending }); pending = 0; }
     });
     if (pending) { parentPort.postMessage({ type: "progress", n: pending }); pending = 0; }
@@ -495,11 +520,12 @@ async function execute(jobs, shared, opts, relMod, progress) {
   const injected = opts.relative && typeof opts.relative.signals === "function";
   const nW = Math.max(1, Math.min(jobs.length, Math.floor(isNum(opts.workers) ? opts.workers : defaultWorkers(jobs.length))));
   if (nW <= 1 || injected) {
-    // Yield to the event loop between assets so a caller's timers keep running.
+    // In-process (always when an analyzer is injected: functions cannot cross threads). Yields to
+    // the event loop between assets so a caller's timers keep running.
+    const env = makeEnv(shared);
     const out = [];
-    const memo = { macro: new Map(), fng: new Map() };
     for (const job of jobs) {
-      out.push(computeAssetRows({ ...job, macro: shared.macro, fng: shared.fng, memo }, relMod, () => progress(1)));
+      out.push(computeAssetRows(job, env, relMod, () => progress(1)));
       await new Promise((r) => setImmediate(r));
     }
     return { results: out, workers: 1 };
@@ -641,7 +667,7 @@ async function buildDataset(opts = {}) {
     if (onProgress && (done - lastEmit >= 50 || done >= total)) { lastEmit = done; onProgress({ phase: "compute", done, total }); }
   };
   const tCompute = Date.now();
-  const { results, workers } = await execute(jobs, { macro: inp.macro, fng: inp.fng }, opts, relMod, progress);
+  const { results, workers } = await execute(jobs, { series: sharedSeries(data), macro: inp.macro, fng: inp.fng }, opts, relMod, progress);
   const computeMs = Date.now() - tCompute;
 
   const rows = [];
@@ -725,19 +751,21 @@ async function updateDataset(ds, opts = {}) {
 
   // 1) Mature labels of existing rows.
   let matured = 0;
-  const bracket = S.bracket;
+  const shared = { series: sharedSeries(data), macro: inp.macro, fng: inp.fng };
+  const env0 = makeEnv({ series: {}, macro: inp.macro, fng: inp.fng });
+  for (const [id, d] of data) env0.series.set(id, d);
   for (const [id, e] of byAsset) {
     const d = data.get(id);
     if (!d || !d.candles.length) continue;
     const a = d.asset;
-    const job = buildJob(S, cfg, a, data, extra);
+    const job = resolveJob(buildJob(S, cfg, a, data, extra), env0);
     for (const r of e.rows) {
       const needs = !r.lab || (r.lab.exRet == null && !job.isBenchmark);
       if (!needs) continue;
       const k = upperBound(d.times, r.t);
       if (k < 0 || d.times[k] !== r.t) continue;
       const atr = isNum(r.atrPct) && isNum(r.price) ? r.atrPct * r.price : null;   // ATR at bar i as built
-      const lab = labelAt({ ...job, bracket }, k, atr);
+      const lab = labelAt(job, k, atr);
       if (lab) { r.lab = lab; matured++; }
     }
   }
@@ -770,7 +798,7 @@ async function updateDataset(ds, opts = {}) {
   const total = jobs.reduce((s, j) => s + Math.max(0, Math.ceil((j.kTo - j.kFrom + 1) / j.stride)), 0);
   let done = 0;
   const progress = (k) => { done += k; if (onProgress) onProgress({ phase: "compute", done, total }); };
-  const { results, workers } = await execute(jobs, { macro: inp.macro, fng: inp.fng }, opts, relMod, progress);
+  const { results, workers } = await execute(jobs, shared, opts, relMod, progress);
   let newRows = 0;
   ds.signalFamily = ds.signalFamily || {};
   for (const r of results) {

@@ -228,7 +228,7 @@ export default function DetailPanel({ assetId, seed, provided, live, tick, minCo
                 <Tag>{d.assetId || assetId}</Tag><Tag>{d.assetClass || "—"}</Tag><Tag>{d.horizon || "—"} · {d.horizonLabel || "—"}</Tag>
                 {rl && <Tag color={C.blue}>regime {rl}</Tag>}
                 {d.regime?.hmmState != null && <Tag>HMM {String(d.regime.hmmState)}</Tag>}
-                {modelTag(d.model) && <Tag color={d.model.kind === "stacker" ? C.violet : C.sub} title="which model produced P(up)">{modelTag(d.model)}</Tag>}
+                {modelTag(d.model) && <Tag color={d.model.kind === "stacker" ? C.violet : C.sub} title={`which model produced P(up)${num(d.model.pooledPUp) != null ? ` · v1 pooled would say ${pct(d.model.pooledPUp, 1)}` : ""}`}>{modelTag(d.model)}</Tag>}
                 {d.meta && typeof d.meta === "object" && <MetaChip meta={d.meta} />}
                 <Tag color={C.dim}>{dt(d.ts)} · {ago(d.ts)}</Tag>
               </div>

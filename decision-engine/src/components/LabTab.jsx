@@ -109,14 +109,31 @@ const byHorizon = (list, horizon) => (list.some(e => e.horizon) ? list.filter(e 
 const vnum = (e) => num(e?.version) ?? toMs(e?.promotedAt ?? e?.ts) ?? 0;
 const wasPromoted = (e) => e?.promoted === true || e?.promotedAt != null || e?.status === "champion";
 
+// /api/lab/status is { selfImprove: status()|null, brain: brain.status(), horizon, ts } on the real
+// server; flatter shapes are accepted too. Fields from selfImprove win over brain's.
+export function normStatus(raw) {
+  if (!raw || typeof raw !== "object") return raw ?? null;
+  const si = obj(raw.selfImprove), br = obj(raw.brain);
+  const first = (...xs) => xs.find(x => x != null);
+  return { ...br, ...si, ...raw,
+    champions: first(raw.champions, si.champions, br.champions),
+    drift: first(raw.drift, si.drift, br.drift),
+    deRisk: first(raw.deRisk, raw.derisk, si.deRisk, si.derisk, br.deRisk, br.derisk),
+    _siMissing: "selfImprove" in raw && !raw.selfImprove };
+}
+
+// Champion summaries (brain.status(): { version, baseRate | n, dropped | MIN_CONFIDENCE… }) carry no
+// metrics; the registry history does. Merge them per slot: registry fields win, summary-only keys stay.
 function resolveChampions(status, regEntries, horizon) {
   const s = obj(status);
   const hz = obj(obj(s.horizons)[horizon] ?? obj(s.byHorizon)[horizon]);
   const list = byHorizon(flattenEntries(hz.champions ?? s.champions ?? null), horizon);
+  const sum = {}, reg = {};
+  const put = (m, e) => { const k = slotKey(e); if (!k) return; if (!m[k] || vnum(e) >= vnum(m[k])) m[k] = e; };
+  for (const e of list) if (!e.status || e.status === "champion") put(sum, e);
+  for (const e of regEntries) if (e.status === "champion") put(reg, e);
   const map = {};
-  const put = (e) => { const k = slotKey(e); if (!k) return; if (!map[k] || vnum(e) >= vnum(map[k])) map[k] = e; };
-  for (const e of list) if (!e.status || e.status === "champion") put(e);
-  for (const e of regEntries) if (e.status === "champion" && !map[slotKey(e)]) put(e);
+  for (const sl of SLOTS) { const a = sum[sl.key], b = reg[sl.key]; if (a || b) map[sl.key] = { ...(a || {}), ...(b || {}) }; }
   return map;
 }
 
@@ -135,13 +152,27 @@ function resolveDrift(status, horizon) {
   const lvl = (m) => (m.level ? String(m.level).toLowerCase() : m.drift === true ? "drift" : m.drift === false ? "ok" : null);
   let level = null;
   for (const m of monitors) { const l = lvl(m); if (l && (level == null || (LEVEL_RANK[l] ?? -1) > (LEVEL_RANK[level] ?? -1))) level = l; }
+  // Expand DriftMonitor-style monitors into their Page-Hinkley detectors (stat vs λ).
+  let live = null;
+  const expanded = [];
+  for (const m of monitors) {
+    const st = m.stat && typeof m.stat === "object" ? m.stat : (m.phLoss || m.phMiss) ? m : null;
+    if (!st) { expanded.push(m); continue; }
+    if (!live) live = { n: num(st.n), logloss: num(st.logloss), hitRate: num(st.hitRate), recent: obj(st.recent), nDrifts: num(st.nDrifts ?? m.nDrifts), lastDrift: st.lastDrift ?? m.lastDrift ?? null };
+    for (const [k, name] of [["phLoss", "PH log-loss"], ["phMiss", "PH miss rate"]]) {
+      const r = obj(st[k]); if (num(r.stat) == null) continue;
+      const ratio = num(r.lambda) ? num(r.stat) / num(r.lambda) : null;
+      expanded.push({ name: monitors.length > 1 ? `${m.name} · ${name}` : name, stat: num(r.stat), threshold: num(r.lambda),
+        level: ratio == null ? lvl(m) : ratio >= 1 ? "drift" : ratio > (num(r.warnFrac) ?? 0.5) ? "warn" : "ok" });
+    }
+  }
   let dr = hz.deRisk ?? hz.derisk ?? s.deRisk ?? s.derisk ?? d.deRisk ?? d.derisk;
   if (dr && typeof dr === "object" && dr[horizon] != null) dr = dr[horizon];
   const drObj = dr === true ? { active: true } : obj(dr);
   const active = drObj.active === true || (drObj.active == null && toMs(drObj.until) != null && toMs(drObj.until) > Date.now());
-  return { level, monitors: monitors.map(m => ({ ...m, _level: lvl(m) })), deRisk: { ...drObj, active } };
+  return { level, live, monitors: expanded.map(m => ({ ...m, _level: lvl(m) })), deRisk: { ...drObj, active } };
 }
-const isRunning = (s) => { const o = obj(s); return o.running === true || /^(running|busy|training|in[-_ ]?progress)$/i.test(String(o.state ?? o.status ?? "")); };
+const isRunning = (s) => { const o = obj(s); return o.running === true || o.busy === true || o.inProgress === true || /^(running|busy|training|in[-_ ]?progress)$/i.test(String(o.state ?? o.status ?? "")); };
 
 // Metrics accessors (every field optional)
 const Mx = (e) => obj(e?.metrics);
@@ -162,7 +193,7 @@ export function pcRows(metrics) {
   return list.filter(r => r.thr != null && r.precision != null).sort((a, b) => a.thr - b.thr);
 }
 function thrVals(e) {
-  const m = { ...obj(e?.model), ...obj(e?.thresholds), ...obj(e?.value) };
+  const m = { ...obj(e), ...obj(e?.model), ...obj(e?.thresholds), ...obj(e?.value) };
   return {
     minConf: num(pick(m, "minConfidence", "MIN_CONFIDENCE", "min_confidence")),
     minEdge: num(pick(m, "minProbEdge", "MIN_PROB_EDGE", "min_prob_edge")),
@@ -172,7 +203,10 @@ function thrVals(e) {
 function maskSummary(e) {
   const raw = obj(obj(e?.model).mask ?? e?.model ?? e?.mask);
   const vals = Object.values(raw).map(num).filter(v => v != null);
-  if (!vals.length) return null;
+  if (!vals.length) {
+    const n = num(e?.n ?? obj(e?.metrics).nSignals), z = num(e?.dropped ?? obj(e?.metrics).nDrop);
+    return n != null ? { n, zero: z ?? 0, down: null, one: null, up: null, rest: Math.max(0, n - (z ?? 0)), map: null } : null;
+  }
   return { n: vals.length, zero: vals.filter(v => v === 0).length, down: vals.filter(v => v > 0 && v < 1).length, one: vals.filter(v => v === 1).length, up: vals.filter(v => v > 1).length, map: raw };
 }
 const cyclesOf = (data) => arr(data?.cycles ?? data?.reports ?? data?.history ?? data).filter(c => c && typeof c === "object").sort((a, b) => (toMs(b.ts) ?? 0) - (toMs(a.ts) ?? 0));
@@ -254,7 +288,7 @@ function StatusHeader({ s, missing, horizon, setHorizon, running, onRun, busy, m
         <Stat label="drift stat" value={worst ? fx(worst.stat, 2) : "—"} color={LEVEL_COLOR[drift.level] || C.text}
           sub={worst ? `${worst.name}${num(pick(worst, "threshold", "lambda")) != null ? ` · λ ${fx(pick(worst, "threshold", "lambda"), 1)}` : ""}` : "no monitor"} />
       </div>
-      {drift.monitors.length > 1 && (
+      {(drift.monitors.length > 1 || (drift.monitors.length === 1 && num(drift.monitors[0].threshold) != null)) && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 6, marginTop: 6 }}>
           {drift.monitors.map(m => {
             const thr = num(pick(m, "threshold", "lambda"));
@@ -266,6 +300,14 @@ function StatusHeader({ s, missing, horizon, setHorizon, running, onRun, busy, m
               </div>
             );
           })}
+        </div>
+      )}
+      {drift.live && (
+        <div style={{ marginTop: 6, fontFamily: MONO, fontSize: 10, color: C.dim, display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <span>live resolved n <b style={{ color: C.sub }}>{drift.live.n ?? "—"}</b></span>
+          <span>log-loss <b style={{ color: C.sub }}>{fx(drift.live.logloss, 4)}</b>{num(drift.live.recent.logloss) != null ? ` (recent ${fx(drift.live.recent.logloss, 4)})` : ""}</span>
+          <span>hit <b style={{ color: C.sub }}>{pct(drift.live.hitRate, 1)}</b>{num(drift.live.recent.hitRate) != null ? ` (recent ${pct(drift.live.recent.hitRate, 1)})` : ""}</span>
+          {drift.live.nDrifts != null && <span>drifts <b style={{ color: C.sub }}>{drift.live.nDrifts}</b>{drift.live.lastDrift?.at ? ` · last ${ago(drift.live.lastDrift.at, now)}` : ""}</span>}
         </div>
       )}
       {dr.active && (
@@ -334,10 +376,12 @@ function ChampionCard({ slot, e, onRollback, busy, horizon }) {
     body = ms ? (
       <div style={{ display: "grid", gap: 5 }}>
         <div style={{ display: "flex", height: 8, borderRadius: 2, overflow: "hidden", gap: 2, background: C.panel }} title="signals by multiplier: ×0 · <1 · =1 · >1">
-          {[[ms.zero, C.down], [ms.down, C.amber], [ms.one, C.hold], [ms.up, C.up]].filter(([n]) => n > 0).map(([n, c], i) => <div key={i} style={{ flex: n, background: c }} />)}
+          {(ms.map ? [[ms.zero, C.down], [ms.down, C.amber], [ms.one, C.hold], [ms.up, C.up]] : [[ms.zero, C.down], [ms.rest, C.hold]]).filter(([n]) => n > 0).map(([n, c], i) => <div key={i} style={{ flex: n, background: c }} />)}
         </div>
         <div style={{ fontFamily: MONO, fontSize: 10, color: C.sub, display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <span><b style={{ color: C.text }}>{ms.n}</b> signals</span><span>×0 <b style={{ color: C.text }}>{ms.zero}</b></span><span>&lt;1 <b style={{ color: C.text }}>{ms.down}</b></span><span>=1 <b style={{ color: C.text }}>{ms.one}</b></span><span>&gt;1 <b style={{ color: C.text }}>{ms.up}</b></span>
+          <span><b style={{ color: C.text }}>{ms.n}</b> signals</span><span>×0 <b style={{ color: C.text }}>{ms.zero}</b></span>
+          {ms.map ? <><span>&lt;1 <b style={{ color: C.text }}>{ms.down}</b></span><span>=1 <b style={{ color: C.text }}>{ms.one}</b></span><span>&gt;1 <b style={{ color: C.text }}>{ms.up}</b></span></>
+            : <span>active <b style={{ color: C.text }}>{ms.rest}</b></span>}
         </div>
       </div>
     ) : <div style={{ fontFamily: MONO, fontSize: 10.5, color: C.sub }}>{Object.keys(m).length ? Object.entries(m).filter(([, v]) => typeof v !== "object").slice(0, 4).map(([k, v]) => `${k} ${fmtAny(k, v)}`).join(" · ") : "multipliers not included in status"}</div>;
@@ -525,8 +569,9 @@ function flatSummary(x) {
   const out = [];
   for (const [k, v] of Object.entries(obj(x))) {
     if (v == null) continue;
-    if (typeof v === "object" && !Array.isArray(v)) { for (const [k2, v2] of Object.entries(v)) if (v2 != null && typeof v2 !== "object") out.push([k2, v2]); }
-    else if (typeof v !== "object") out.push([k, v]);
+    if (Array.isArray(v)) out.push([k, v.length]);
+    else if (typeof v === "object") { for (const [k2, v2] of Object.entries(v)) if (Array.isArray(v2)) out.push([k2, v2.length]); else if (v2 != null && typeof v2 !== "object") out.push([k2, v2]); }
+    else out.push([k, v]);
   }
   return out.slice(0, 12);
 }
@@ -694,10 +739,11 @@ function SignalDetail({ s, labels, rmax, mult, onClose }) {
         {mult != null && <Tag color={mult === 0 ? C.down : mult > 1 ? C.up : C.sub}>mask ×{fx(mult, 2)}</Tag>}
         <span style={{ flex: 1 }} /><Btn small onClick={onClose}>✕</Btn>
       </div>
+      {s.reason && <div style={{ fontSize: 11, color: C.sub, marginBottom: 8, lineHeight: 1.4 }}>{String(s.reason)}</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 6 }}>
         <Stat label="IC" value={snum(s._ic, 3)} color={colorSign(s._ic)} />
-        <Stat label="IC t (HAC)" value={snum(s._t, 2)} sub={s._p != null ? `p ${s._p < 0.001 ? "<0.001" : s._p.toFixed(3)}` : null} />
-        <Stat label="hit rate" value={pct(s._hit, 1)} sub={s._lo != null ? `[${pct(s._lo, 1)}, ${pct(s._hi, 1)}]` : null} />
+        <Stat label="IC t (HAC)" value={snum(s._t, 2)} sub={s._p != null ? `p ${s._p < 0.001 ? "<0.001" : s._p.toFixed(3)}${num(s.qValue) != null ? ` · q ${fx(s.qValue, 3)}` : ""}` : null} />
+        <Stat label="hit rate" value={pct(s._hit, 1)} sub={s._lo != null ? `[${pct(s._lo, 1)}, ${pct(s._hi, 1)}]${num(s.hitBase) != null ? ` · base ${pct(s.hitBase, 1)}` : ""}` : null} />
         <Stat label="n / n_eff" value={s._n != null ? s._n.toLocaleString("en-US") : "—"} sub={s._nEff != null ? `eff ${Math.round(s._nEff).toLocaleString("en-US")}` : null} />
         <Stat label="stable" value={s._stable == null ? "—" : s._stable ? "yes" : "sign flips"} color={s._stable == null ? C.text : s._stable ? C.up : C.down} sub={s._h1 != null || s._h2 != null ? `h1 ${snum(s._h1, 3)} · h2 ${snum(s._h2, 3)}` : null} />
         <Stat label="ret | long" value={spct(s.meanRetWhenLong, 2)} color={colorSign(s.meanRetWhenLong)} />
@@ -843,7 +889,7 @@ export default function LabTab({ defaultHorizon }) {
   const [fastUntil, setFastUntil] = useState(0);
   const [pollFast, setPollFast] = useState(false);
   const status = useSoft("/api/lab/status", { interval: pollFast ? 3000 : 15000 });
-  const s = status.data;
+  const s = useMemo(() => normStatus(status.data), [status.data]);
   const running = isRunning(s);
   const cycles = useSoft(`/api/lab/cycles?horizon=${hq}`, { interval: running ? 10000 : 60000 });
   const registry = useSoft(`/api/lab/registry?horizon=${hq}`, {});
@@ -876,7 +922,8 @@ export default function LabTab({ defaultHorizon }) {
   const metaThr = thrVals(champs.thresholds).metaThr ?? thrVals({ model: so.thresholds ?? last.thresholds }).metaThr ?? num(metaEntry?.threshold ?? obj(metaEntry?.model).threshold);
 
   const loaded = s !== undefined && cycles.data !== undefined && card.data !== undefined && registry.data !== undefined;
-  const nothing = loaded && !s && !cycleList.length && !sigList(card.data).length && !regEntries.length;
+  const nothing = loaded && !running && !champCount && !cycleList.length && !sigList(card.data).length && !regEntries.length;
+  const statusMissing = s == null || (s._siMissing && !champCount && !Object.keys(last).length);
 
   const onRun = async () => {
     setBusy("run");
@@ -884,19 +931,20 @@ export default function LabTab({ defaultHorizon }) {
     setBusy(null);
     if (r.ok && r.data?.started !== false) { setMsg({ text: `▶ cycle started for ${horizon} — this page polls every 3s while it runs`, color: C.up }); setFastUntil(Date.now() + 30000); status.reload(); }
     else if (r.ok) setMsg({ text: `not started: ${r.data?.reason || r.data?.error || "a cycle is already running"}`, color: C.amber });
-    else setMsg({ text: r.missing ? "POST /api/lab/run isn't available on this server yet (404). The integrator is still wiring /api/lab/*." : `run failed: ${r.msg}`, color: r.missing ? C.amber : C.down });
+    else setMsg({ text: r.missing ? "POST /api/lab/run isn't available on this server yet (404). The integrator is still wiring /api/lab/*." : `run failed: ${r.msg}`, color: r.missing || r.status === 503 || r.status === 409 ? C.amber : C.down });
   };
   const onRollback = async (slot) => {
     setBusy("rb:" + slot.key);
     const r = await softPost("/api/lab/rollback", { horizon, kind: slot.kind, ...(slot.target ? { target: slot.target } : {}) });
     setBusy(null);
-    if (r.ok) { setMsg({ text: `↶ ${slot.kind}${slot.target ? "·" + slot.target : ""} rolled back${r.data?.version != null ? ` → ${vlabel(r.data.version)}` : r.data?.champion?.version != null ? ` → ${vlabel(r.data.champion.version)}` : ""}`, color: C.up }); status.reload(); registry.reload(); cycles.reload(); }
+    const restored = r.data?.result?.restored?.version ?? r.data?.restored?.version ?? r.data?.version ?? r.data?.champion?.version;
+    if (r.ok) { setMsg({ text: `↶ ${slot.kind}${slot.target ? "·" + slot.target : ""} rolled back${restored != null ? ` → ${vlabel(restored)} is champion again` : ""}`, color: C.up }); status.reload(); registry.reload(); cycles.reload(); }
     else setMsg({ text: r.missing ? "POST /api/lab/rollback isn't available on this server yet (404)." : `rollback failed: ${r.msg}`, color: r.missing ? C.amber : C.down });
   };
 
   return (
     <div ref={ref} style={{ display: "grid", gap: 10 }}>
-      <StatusHeader s={s} missing={s === null} horizon={horizon} setHorizon={setHorizon} running={running} onRun={onRun} busy={busy} msg={msg}
+      <StatusHeader s={s} missing={statusMissing} horizon={horizon} setHorizon={setHorizon} running={running} onRun={onRun} busy={busy} msg={msg}
         now={now} drift={drift} champCount={champCount} last={Object.keys(last).length ? last : null} narrow={narrow} />
       {status.err && <ErrorBox err={"status: " + status.err} onRetry={status.reload} />}
 
