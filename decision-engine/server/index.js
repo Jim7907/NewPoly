@@ -268,11 +268,14 @@ async function main() {
     try {
       si.schedule({ everyMs: Number(process.env.SELF_IMPROVE_EVERY_MS) || 6 * 3600e3,
         horizons: (process.env.SELF_IMPROVE_HORIZONS || "swing,position,intraday").split(",").filter(h => cfg.HORIZONS[h]),
-        onReport: (r) => { brain.reload(true); broadcast({ type: "lab", event: "cycle", report: r }); } });
+        onReport: (r) => { brain.reload(true); broadcast({ type: "lab", event: "cycle", report: r });
+          if (r && r.horizon) engine.refreshDirectionStats([r.horizon]).catch(() => {}); } });
       console.log(" Self-improvement loop: scheduled");
     } catch (e) { console.error("[lab] schedule failed:", e.message); }
   }
   setInterval(() => brain.reload(), 60_000);
+  // Directional-forecast track record (historical, from the research panel) — computed off-thread.
+  setTimeout(() => engine.refreshDirectionStats().then(() => console.log("[dirstats] track record ready")).catch(() => {}), 30_000);
 
   // Warm start once per horizon (walk-forward backtests → calibrator + prior weights).
   const h = engine.currentHorizon();

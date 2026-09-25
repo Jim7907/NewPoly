@@ -35,6 +35,7 @@ const CLASSES = ["crypto", "stock"];
 const ckey = (h, cls) => `${h}|${cls}`;
 
 function loadState() {
+  loadDirectionStats();
   const w = db.loadModel("weights");
   if (w) learner = WeightLearner.fromJSON(w);
   // Refit from the stored (pRaw, y) pairs on every boot — cheap, and it keeps the calibrator in
@@ -72,6 +73,29 @@ function refitCalibrator(horizon, cls, newPairs = []) {
   calibrators[ckey(horizon, cls)] = c;
   db.saveModel(`calib:${ckey(horizon, cls)}`, { model: c.toJSON(), baseRate: c.baseRate });
   return c;
+}
+
+// ── Directional forecast track record (historical, from the research panel) ──
+const dirStats = {};   // horizon -> directionStats table
+function loadDirectionStats() {
+  for (const h of Object.keys(cfg.HORIZONS)) { const t = db.loadModel(`dirstats:${h}`); if (t) dirStats[h] = t; }
+}
+async function refreshDirectionStats(horizons = Object.keys(cfg.HORIZONS)) {
+  const ds = require("./research/directionStats");
+  for (const h of horizons) {
+    try { const t = await ds.computeInWorker(h); dirStats[h] = t; db.saveModel(`dirstats:${h}`, t); }
+    catch (e) { console.error(`[dirstats] ${h}:`, e.message); }
+  }
+}
+const pctS = (x) => (Number.isFinite(x) ? `${(x * 100).toFixed(0)}%` : "n/a");
+function forecastText(f, cls, horizonLabel) {
+  const h = f.historical;
+  const head = `${f.direction} — ${pctS(f.alignment)} of signal weight aligned (${f.strength}); ${f.votes.up} signals up / ${f.votes.down} down.`;
+  const cal = ` Calibrated chance this direction happens over ${horizonLabel}: ${pctS(f.pDirection)}.`;
+  if (!h) return head + cal + " No historical track record for this bucket yet.";
+  if (h.hitRate == null) return head + cal + ` Too few historical ${cls} calls in the ${h.bucket} alignment bucket to judge (n=${h.n}).`;
+  const verdict = h.lift >= 0.02 ? "better than" : h.lift <= -0.02 ? "worse than" : "about the same as";
+  return head + cal + ` Historically, ${cls} ${f.direction} calls with ${h.bucket} alignment were right ${pctS(h.hitRate)} of the time (n=${h.n.toLocaleString("en-US")}), ${verdict} the ${pctS(h.baseRate)} base rate.`;
 }
 
 // ── Helpers ──
@@ -191,6 +215,18 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
     calibration: { pRaw: calDecision.pRaw, logOdds: calDecision.logOdds, extraShrink: 0.5 },
   });
   decision.pRawPIT = pitDecision.pRaw;
+  if (decision.forecast) {
+    // Track record: looked up with the point-in-time subset's forecast (the only part with history).
+    const ds = require("./research/directionStats");
+    const pf = pitDecision.forecast;
+    const hist = pf && pf.direction === decision.forecast.direction ? ds.lookup(dirStats[horizon], asset.assetClass, pf) : null;
+    decision.forecast.historical = hist;
+    if (pf && pf.direction !== decision.forecast.direction) decision.forecast.note = "live-only signals (news/fundamentals/derivatives/order flow/ML) flipped the price-based consensus; no historical record for this mix";
+    decision.forecast.text = forecastText(decision.forecast, asset.assetClass, hc.label);
+    const f = decision.forecast;
+    decision.summary = `Forecast ${f.direction === "UP" ? "▲ UP" : "▼ DOWN"} (${pctS(f.alignment)} aligned, ${f.strength}` +
+      `${f.historical?.hitRate != null ? `; historically right ${pctS(f.historical.hitRate)} vs ${pctS(f.historical.baseRate)} base` : ""}). ` + decision.summary;
+  }
   decision.pRawCal = calDecision.pRaw;
   if (preds.relative) decision.relative = { ...preds.relative, rank: rankOf(asset, horizon) };
   if (preds.targetFirst) decision.targetFirst = preds.targetFirst;
@@ -348,6 +384,7 @@ async function rankings({ horizon = currentHorizon(), cls = "stock", maxAgeMs = 
       pOutperform: preds.relative?.pOutperform ?? null, relScore,
       model: preds.relative ? { kind: "stacker", version: preds.relative.version } : { kind: "relative-family", version: null },
       pUp: preds.probability?.pUp ?? d0.pUp, action: d0.action, regime: regime?.label || null,
+      direction: d0.forecast?.direction ?? null, alignment: d0.forecast?.alignment ?? null, strength: d0.forecast?.strength ?? null,
       drivers: d0.drivers.slice(0, 2).map(x => x.reason),
     });
   });
@@ -379,8 +416,25 @@ const perfReport = () => {
   const pairs = res.filter(d => d.horizon === h).map(d => ({ p: d.pUp, y: d.y }));
   let calibration = null;
   try { calibration = pairs.length ? Calibrator.reliabilityOf(pairs) : null; } catch { /* ignore */ }
+  // Directional forecast accuracy on resolved live decisions.
+  const dirAgg = () => ({ n: 0, hits: 0 });
+  const live = { ...dirAgg(), byStrength: {}, byAlignment: {}, byClass: {} };
+  const dsMod = require("./research/directionStats");
+  for (const d of res) {
+    if (d.fdir !== 1 && d.fdir !== -1) continue;
+    const hit = (d.fdir === 1 && d.y === 1) || (d.fdir === -1 && d.y === 0) ? 1 : 0;
+    const bump = (o) => { o.n++; o.hits += hit; };
+    bump(live);
+    bump(live.byStrength[d.fstrength || "weak"] ||= dirAgg());
+    bump(live.byAlignment[dsMod.bucketOf(d.falign ?? 0.5)] ||= dirAgg());
+    bump(live.byClass[d.assetClass] ||= dirAgg());
+  }
+  const rate = (o) => { o.hitRate = o.n ? o.hits / o.n : null; o.ci95 = dsMod.wilson(o.hits, o.n); return o; };
+  rate(live); for (const k of ["byStrength", "byAlignment", "byClass"]) for (const o of Object.values(live[k])) rate(o);
+  const direction = { live, historical: dirStats[h] || null };
+
   return {
-    horizon: h, nResolved: res.length, calibration,
+    horizon: h, nResolved: res.length, calibration, direction,
     calibrator: calibrators[ckey(h, "crypto")]?.reliability?.() || calibrators[ckey(h, "stock")]?.reliability?.() || null,
     calibrators: Object.fromEntries(CLASSES.map(cls => [cls, calibrators[ckey(h, cls)]
       ? { ...calibrators[ckey(h, cls)].reliability(), baseRate: calibrators[ckey(h, cls)].baseRate } : null])),
@@ -388,5 +442,5 @@ const perfReport = () => {
   };
 };
 
-module.exports = { evaluate, buildSignals, maybeLog, resolveDue, warmStart, loadState, perfReport, thresholds, currentHorizon, rankings,
+module.exports = { evaluate, buildSignals, maybeLog, resolveDue, warmStart, loadState, perfReport, thresholds, currentHorizon, rankings, refreshDirectionStats,
   get learner() { return learner; }, calibrators };

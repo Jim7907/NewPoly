@@ -26,6 +26,7 @@ async function main() {
     if (flag("json")) { console.log(JSON.stringify(d, null, 2)); continue; }
     console.log(`\n══ ${asset.symbol} (${cls}) — ${horizon} ══  [${Date.now() - t0} ms, ${d.signals?.length || 0} signals]`);
     console.log(d.summary);
+    if (d.forecast) console.log(`\n  FORECAST ${d.forecast.direction}  ${d.forecast.strength}  aligned ${pct(d.forecast.alignment)}  votes ▲${d.forecast.votes.up} ▼${d.forecast.votes.down}  P(direction) ${pct(d.forecast.pDirection)}\n  ${d.forecast.text || ""}`);
     console.log(`\n  action ${d.action}  P(up) ${pct(d.pUp)}  raw ${pct(d.pRaw)}  confidence ${pct(d.confidence)}  agreement ${pct(d.agreement)}  coverage ${pct(d.coverage)}`);
     if (d.abstainReason) console.log(`  abstain: ${d.abstainReason}`);
     console.log("  families:");

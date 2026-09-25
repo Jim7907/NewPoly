@@ -523,8 +523,48 @@ function decide(input = {}, opts = {}) {
     meta: meta ? { pSuccess: round(meta.pSuccess, 4), threshold: meta.threshold, version: meta.version } : null,
     logOdds: round(L, 4), drivers, against, signals: sigs, abstainReason: fails.length ? fails.join("; ") : null,
   };
+  decision.forecast = forecastOf({ items, L, pRaw, pUp, action, noEvidence });
   decision.summary = buildSummary(decision, cal);
   return decision;
+}
+
+// ── Directional forecast (always given) ──
+// The trade ACTION is confidence-gated and usually HOLD; the FORECAST is the signals' consensus
+// direction, always UP or DOWN, with how strongly the evidence agrees. Direction = sign of the pooled
+// log-odds L (the signals, before calibration), so it is aligned with the signals by construction.
+// alignment = share of the weighted (de-duplicated, regime-weighted) evidence pointing that way.
+// pDirection = calibrated probability that the stated direction happens — reported honestly even
+// when it is ≈ 50% (a consensus is not the same as an edge).
+const FORECAST = Object.freeze({ STRONG_ALIGN: 0.75, STRONG_EDGE: 0.04, MODERATE_ALIGN: 0.62, VOTE_MIN: 0.05 });
+function forecastOf({ items, L, pRaw, pUp, action, noEvidence }) {
+  let net = 0;
+  for (const x of items) net += x.contribution;
+  const dir = L > 0 ? 1 : L < 0 ? -1 : (net >= 0 ? 1 : -1);
+  let pro = 0, tot = 0;
+  for (const x of items) { const c = Math.abs(x.contribution); tot += c; if (Math.sign(x.contribution) === dir) pro += c; }
+  const alignment = tot > 0 ? pro / tot : 0.5;
+  const votes = { up: 0, down: 0, neutral: 0 };
+  for (const x of items) {
+    const v = x.s.score * x.s.confidence;
+    if (v >= FORECAST.VOTE_MIN) votes.up++; else if (v <= -FORECAST.VOTE_MIN) votes.down++; else votes.neutral++;
+  }
+  const sigEdge = Math.abs(pRaw - 0.5);
+  const strength = noEvidence ? "weak"
+    : alignment >= FORECAST.STRONG_ALIGN && sigEdge >= FORECAST.STRONG_EDGE ? "strong"
+    : alignment >= FORECAST.MODERATE_ALIGN ? "moderate" : "weak";
+  const ranked = items.filter(x => Math.abs(x.contribution) > 1e-9).sort((p, q) => Math.abs(q.contribution) - Math.abs(p.contribution));
+  const brief = (x) => ({ id: x.s.id, family: x.s.family, reason: x.s.reason || "", contribution: round(x.contribution, 5) });
+  const direction = dir > 0 ? "UP" : "DOWN";
+  const isBuy = action === "BUY" || action === "STRONG_BUY", isSell = action === "SELL" || action === "STRONG_SELL";
+  return {
+    direction, strength, alignment: round(alignment, 4),
+    pSignal: round(pRaw, 4), pDirection: round(dir > 0 ? pUp : 1 - pUp, 4),
+    votes,
+    topFor: ranked.filter(x => Math.sign(x.contribution) === dir).slice(0, 3).map(brief),
+    topAgainst: ranked.filter(x => Math.sign(x.contribution) === -dir).slice(0, 2).map(brief),
+    agreesWithAction: action === "HOLD" ? null : (dir > 0 && isBuy) || (dir < 0 && isSell),
+    historical: null,
+  };
 }
 
 function buildSummary(d, cal) {
@@ -556,6 +596,7 @@ function buildSummary(d, cal) {
 }
 
 module.exports = {
+  forecastOf, FORECAST,
   decide, familyWeights, DEFAULT_FAMILY_WEIGHTS, CRYPTO_FUNDAMENTAL, PARAMS, BRACKETS, FAMILIES,
   signalLogOdds, diminishingSum, confidenceScore, styleMultiplier, styleOf, subfamily, regimeClarity,
   dataQualityOf, readThresholds, calibInfo,

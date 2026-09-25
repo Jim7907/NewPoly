@@ -38,6 +38,8 @@ async function initDB({ memory = false } = {}) {
     action TEXT, pUp REAL, pRaw REAL, confidence REAL, agreement REAL, price REAL,
     regime TEXT, families TEXT, votes TEXT, resolveAt INTEGER,
     resolved INTEGER DEFAULT 0, priceAtResolve REAL, fwdReturn REAL, y INTEGER )`);
+  // v2.1: directional forecast columns (added to existing DBs in place)
+  for (const col of ["fdir INTEGER", "falign REAL", "fstrength TEXT"]) { try { db.run(`ALTER TABLE decisions ADD COLUMN ${col}`); } catch { /* exists */ } }
   db.run(`CREATE INDEX IF NOT EXISTS ix_dec_asset ON decisions(assetId, ts)`);
   db.run(`CREATE INDEX IF NOT EXISTS ix_dec_resolve ON decisions(resolved, resolveAt)`);
   db.run(`CREATE TABLE IF NOT EXISTS positions (
@@ -94,11 +96,13 @@ const num = (k, d) => { const v = parseFloat(getSetting(k)); return Number.isFin
 function logDecision(d, resolveAt) {
   const id = uid();
   const votes = (d.signals || []).map(s => ({ id: s.id, family: s.family, score: +(+s.score).toFixed(4), confidence: +(+s.confidence).toFixed(4) }));
-  run(`INSERT INTO decisions (id,ts,assetId,symbol,assetClass,horizon,action,pUp,pRaw,confidence,agreement,price,regime,families,votes,resolveAt)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const f = d.forecast || null;
+  run(`INSERT INTO decisions (id,ts,assetId,symbol,assetClass,horizon,action,pUp,pRaw,confidence,agreement,price,regime,families,votes,resolveAt,fdir,falign,fstrength)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     // audit: the pRaw column feeds the calibrator, so store the backtest-equivalent pRawCal when present
     [id, d.ts || nowIso(), d.assetId, d.symbol, d.assetClass, d.horizon, d.action, d.pUp, d.pRawCal ?? d.pRaw, d.confidence,
-     d.agreement ?? null, d.price, d.regime?.label || null, JSON.stringify(d.families || {}), JSON.stringify(votes), resolveAt]);
+     d.agreement ?? null, d.price, d.regime?.label || null, JSON.stringify(d.families || {}), JSON.stringify(votes), resolveAt,
+     f ? (f.direction === "UP" ? 1 : -1) : null, f ? f.alignment : null, f ? f.strength : null]);
   return id;
 }
 
