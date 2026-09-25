@@ -51,10 +51,12 @@ function reload(force = false) {
 }
 
 // ── Signal mask ──
+// Research prior (docs/DIAGNOSTICS.md): signals whose sign was wrong at EVERY horizon in the
+// point-in-time study are zero-weighted (never inverted — flipping would be data snooping).
+const PRIOR_MASK = { "sent.feargreed.contrarian": 0 };
 function applyMask(signals, horizon) {
   reload();
-  const mask = champs[horizon]?.mask?.map;
-  if (!mask) return signals;
+  const mask = { ...PRIOR_MASK, ...(champs[horizon]?.mask?.map || {}) };
   return signals.map(s => {
     const key = pitId(s.id);
     const m = mask[key] ?? mask[s.id];

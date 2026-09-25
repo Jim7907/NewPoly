@@ -66,8 +66,8 @@ const round = (x, d) => { const m = 10 ** d; return Math.round(fin(x) * m) / m; 
 // CRYPTO_FUNDAMENTAL. ML is not boosted: its own signal confidence (OOS-AUC based) scales it.
 const DEFAULT_FAMILY_WEIGHTS = Object.freeze({
   intraday: { technical: 1, ml: 0.6, regime: 0.3, derivatives: 0.3, microstructure: 0.7, sentiment: 0.3,  macro: 0.1, fundamental: 0,    llm: 0.2, relative: 0.2 },
-  swing:    { technical: 1, ml: 0.7, regime: 0.4, derivatives: 0.5, microstructure: 0.1, sentiment: 0.3,  macro: 0.3, fundamental: 0.15, llm: 0.3, relative: 0.5 },
-  position: { technical: 1, ml: 0.5, regime: 0.5, derivatives: 0.5, microstructure: 0,   sentiment: 0.15, macro: 0.5, fundamental: 0.4,  llm: 0.2, relative: 0.6 },
+  swing:    { technical: 1, ml: 0.7, regime: 0.2, derivatives: 0.5, microstructure: 0.1, sentiment: 0.3,  macro: 0.3, fundamental: 0.15, llm: 0.3, relative: 0.5 },
+  position: { technical: 1, ml: 0.5, regime: 0.2, derivatives: 0.5, microstructure: 0,   sentiment: 0.15, macro: 0.5, fundamental: 0.4,  llm: 0.2, relative: 0.6 },
 });
 const CRYPTO_FUNDAMENTAL = Object.freeze({ intraday: 0, swing: 0.1, position: 0.25 });
 

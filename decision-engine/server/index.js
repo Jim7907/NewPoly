@@ -266,7 +266,8 @@ async function main() {
   const si = lazy("./learning/selfImprove");
   if (si?.schedule && process.env.SELF_IMPROVE !== "false") {
     try {
-      si.schedule({ everyMs: Number(process.env.SELF_IMPROVE_EVERY_MS) || 6 * 3600e3, horizons: [engine.currentHorizon()],
+      si.schedule({ everyMs: Number(process.env.SELF_IMPROVE_EVERY_MS) || 6 * 3600e3,
+        horizons: (process.env.SELF_IMPROVE_HORIZONS || "swing,position,intraday").split(",").filter(h => cfg.HORIZONS[h]),
         onReport: (r) => { brain.reload(true); broadcast({ type: "lab", event: "cycle", report: r }); } });
       console.log(" Self-improvement loop: scheduled");
     } catch (e) { console.error("[lab] schedule failed:", e.message); }

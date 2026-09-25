@@ -119,7 +119,9 @@ function defaultDeps() {
     loadDataset: (f) => ds().loadDataset(f),
     saveDataset: (d, f) => ds().saveDataset(d, f),
     reportCard: (d, o) => se().reportCard(d, o),
-    signalMask: (r) => se().signalMask(r),
+    // requireEvidence: with nothing surviving FDR, every signal gets the neutral multiplier instead of
+    // ~28/42 being zeroed on noise (docs/DIAGNOSTICS.md).
+    signalMask: (r) => se().signalMask(r, { requireEvidence: true }),
     trainStacker: (d, o) => st().trainStacker(d, o),
     loadStacker: (j) => st().Stacker.fromJSON(j),
     trainMetaLabeler: (d, o) => ml().trainMetaLabeler(d, o),
@@ -322,6 +324,13 @@ async function acquireDataset(deps, horizon, o, progress, notes) {
   if (ds && deps.updateDataset) {
     ds = await deps.updateDataset(ds, { ...o.datasetOpts, onProgress });
     source = "cache+update";
+    // Analyzer/ensemble code changed since the cached rows were computed → the old rows describe a
+    // different statistic than live serving; rebuild from scratch instead of mixing the two.
+    if (ds && ds.meta && ds.meta.lastUpdate && ds.meta.lastUpdate.codeChanged && deps.buildDataset) {
+      notes.push("analyzer code changed since the cached dataset was built — full rebuild");
+      ds = await deps.buildDataset({ horizon, ...o.datasetOpts, onProgress });
+      source = "rebuilt (code changed)";
+    }
   } else if (!ds) {
     ds = await deps.buildDataset({ horizon, ...o.datasetOpts, onProgress });
   } else source = "cache";
