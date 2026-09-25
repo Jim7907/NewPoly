@@ -84,9 +84,9 @@ function buildSignals(asset, g, horizon, errors) {
   out.push(...safe("ml", () => ml.signals(g.candles || [], { ahead: hc.ahead, key: `${asset.id}|${hc.tf}` }), errors));
 
   if (asset.assetClass === "stock") {
-    if (g.fundamentals && !asset.etf) out.push(...safe("fundamental", () => fundamental.stockSignals(g.fundamentals), errors));
+    if (g.fundamentals) out.push(...safe("fundamental", () => fundamental.stockSignals(g.fundamentals, { horizon, asset, now: Date.now() }), errors));
   } else if (g.fundamentals) {
-    out.push(...safe("fundamental", () => fundamental.cryptoSignals(g.fundamentals), errors));
+    out.push(...safe("fundamental", () => fundamental.cryptoSignals(g.fundamentals, { horizon, btc: asset.symbol === "BTC" ? null : g.btcFundamentals || null }), errors));
   }
 
   if (g.news?.length) out.push(...safe("news", () => sentiment.newsSignals(g.news, { now: Date.now() }), errors));
@@ -94,7 +94,7 @@ function buildSignals(asset, g, horizon, errors) {
   if (asset.assetClass === "crypto" && g.fearGreed) out.push(...safe("feargreed", () => sentiment.fearGreedSignal(g.fearGreed), errors));
   if (g.macro) out.push(...safe("macro", () => macroMod.signals(g.macro, asset), errors));
   if (asset.assetClass === "crypto") {
-    if (g.derivatives) out.push(...safe("derivatives", () => derivatives.signals(g.derivatives), errors));
+    if (g.derivatives) out.push(...safe("derivatives", () => derivatives.signals(g.derivatives, { candles: g.candlesByTf?.["1h"] || g.candles }), errors));
     if (g.microstructure) out.push(...safe("microstructure", () => micro.signals(g.microstructure, { horizon }), errors));
   }
 
@@ -107,6 +107,10 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
   const hc = H(horizon);
   const errors = [];
   const g = await data.gather(asset, hc);
+  if (asset.assetClass === "crypto" && asset.symbol !== "BTC") {
+    const btc = cfg.CRYPTO_UNIVERSE.BTC;
+    g.btcFundamentals = await data.fundamentals({ ...btc, assetClass: "crypto", id: "CRYPTO:BTC" }).catch(() => null);
+  }
   const { signals, regime } = buildSignals(asset, g, horizon, errors);
 
   let llm = null;
