@@ -16,7 +16,8 @@
 //       test for a RELATIVE target; for "ret" it is (within a class) the same ranking as exRet and
 //       says nothing about direction, hence:
 //   ts  Pooled time-series "timing" IC for ABSOLUTE targets: z = rank of x against the asset's own
-//       PAST values only (point-in-time), ỹ = target / (ATR%·√ahead) left uncentred;
+//       PAST values only (point-in-time), ỹ = target / (ATR%·√ahead) left uncentred (tbLong: gross
+//       of the constant round-trip cost, so its true mean is ~0);
 //       IC = Σz·ỹ / √(Σz²·Σỹ²). Driscoll–Kraay SE (per-date sums, Newey–West across dates), robust
 //       to same-day cross-correlation and overlapping labels. Unbiased under unpredictable returns.
 //       Ranking x and y over each asset's full sample instead ("tsfull", kept for diagnostics only)
@@ -218,12 +219,19 @@ function buildPanel(ds, opts) {
     if (k % 7 === 0 && isNum(r.lab.tEnd)) spans.push(r.lab.tEnd - r.t);
   }
   // Timing-IC target: y in units of the bar-i volatility over the label window (point-in-time
-  // ATR% · √ahead), winsorised at ±6, NOT centred (see tsIC).
+  // ATR% · √ahead), winsorised at ±6, NOT centred (see tsIC). The timing IC needs a target whose
+  // true mean is ~0, so for tbLong the round-trip cost (a known constant: ds.meta.costsBps) is added
+  // back — otherwise a signal that merely trends through the sample picks up E[z]·(−cost) (at 15m
+  // crypto, 30 bps is ~½σ of a 2h move). Hit rates and conditional means keep NET returns.
   const aheadN = Math.max(1, (ds.ahead | 0) || 1);
   const scales = rows.map((r) => (isNum(r.atrPct) && r.atrPct > 0 ? r.atrPct * Math.sqrt(aheadN) : NaN));
   const medScale = median(scales) || 0.02;
+  const costBps = opts.costsBps || (ds.meta && ds.meta.costsBps) || {};
   const ys = new Float64Array(N);
-  for (let k = 0; k < N; k++) ys[k] = clamp(y[k] / (isNum(scales[k]) ? scales[k] : medScale), -6, 6);
+  for (let k = 0; k < N; k++) {
+    const add = target === "tbLong" && isNum(costBps[rows[k].assetClass]) ? costBps[rows[k].assetClass] / 1e4 : 0;
+    ys[k] = clamp((y[k] + add) / (isNum(scales[k]) ? scales[k] : medScale), -6, 6);
+  }
   // Every row of each panel asset (labelled or not, inside the from/to window or before it) in time
   // order: the history a point-in-time rank may look back on.
   const pos = new Map(rows.map((r, k) => [r, k]));
@@ -466,7 +474,7 @@ function assignVerdicts(stats, q, minN) {
 
 /**
  * reportCard(ds, { target="ret", byRegime=true, minN=200, q=0.10, mode="auto", minXS=5,
- *                  assetClass?, from?, to?, lag?, lagMult=1 })
+ *                  assetClass?, from?, to?, lag?, lagMult=1, legacyTs=false, costsBps? })
  *   lagMult scales the NW lag (robustness check: Bartlett weights under-correct persistent,
  *   market-wide predictors on overlapping labels; lagMult=2 is the conservative variant).
  *   → { target, mode, horizon, ahead, lag, nRows, nDates, nAssets, baseRate, signals: {id: SignalStat},
@@ -537,10 +545,16 @@ function maskValue(s) {
   }
 }
 
-/** signalMask(report) → { [signalId]: confidence multiplier }. Ids not in the map → MASK_DEFAULT. */
-function signalMask(report) {
+/**
+ * signalMask(report, { requireEvidence=false }) → { [signalId]: confidence multiplier }.
+ * Ids not in the map → MASK_DEFAULT. With requireEvidence, a report in which NOTHING survives the
+ * FDR control yields MASK_DEFAULT for every signal: under pure noise the verdict rules still "drop"
+ * ~60% of signals (sign flips between halves, IC ≤ 0 with p < 0.2), which is noise-fitting too.
+ */
+function signalMask(report, opts = {}) {
   const out = {};
-  for (const [id, s] of Object.entries((report && report.signals) || {})) out[id] = maskValue(s);
+  const noEvidence = !!opts.requireEvidence && !(report && report.fdr && report.fdr.nSignificant > 0);
+  for (const [id, s] of Object.entries((report && report.signals) || {})) out[id] = noEvidence ? MASK_DEFAULT : maskValue(s);
   return out;
 }
 

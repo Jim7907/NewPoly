@@ -181,6 +181,9 @@ test("signalMask maps verdicts to confidence multipliers", () => {
   assert.equal(m.e, 0);
   assert.equal(m.f, 0);
   assert.equal(m.g, E.MASK_DEFAULT);
+  // requireEvidence: nothing significant after FDR → neutral mask; otherwise per verdict.
+  assert.ok(Object.values(E.signalMask({ ...rep, fdr: { nSignificant: 0 } }, { requireEvidence: true })).every((v) => v === E.MASK_DEFAULT));
+  assert.equal(E.signalMask({ ...rep, fdr: { nSignificant: 2 } }, { requireEvidence: true }).e, 0);
   // On a real report: low-n signals → 0.8.
   const ds = makePanel({ seed: 5, A: 8, T: 120, nNoise: 2, nMkt: 1 });
   const rep2 = E.reportCard(ds, { target: "ret", minN: 5000 });
