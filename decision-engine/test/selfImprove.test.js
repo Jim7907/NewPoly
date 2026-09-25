@@ -419,4 +419,19 @@ if (isMainThread) {
     si.stop();
     release();
   });
+
+  test("promotion gate (c): a model that only learned class base rates is rejected", () => {
+    const si = require("../server/learning/selfImprove");
+    const ev = {
+      n: 5000, nDates: 300, lag: 7,
+      challenger: { logloss: 0.6880 }, baseline: { logloss: 0.6910 }, champion: null,
+      dmBaseline: { stat: 2.9, p: 0.004, lag: 7, nDates: 300 },
+      classBase: { logloss: 0.6878 }, dmClassBase: { stat: -0.3, p: 0.79, lag: 7, nDates: 300 },
+    };
+    const d = si.promotionDecision(ev, { hasChampion: false });
+    assert.equal(d.promote, false);
+    assert.match(d.reason, /class base rate/);
+    const good = { ...ev, classBase: { logloss: 0.6905 }, dmClassBase: { stat: 2.4, p: 0.02, lag: 7, nDates: 300 } };
+    assert.equal(si.promotionDecision(good, { hasChampion: false }).promote, true);
+  });
 }

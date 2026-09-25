@@ -29,6 +29,8 @@
 //  stacker / meta challengers — evaluated ONLY on the holdout (never on in-sample metrics):
 //   (0) holdout has ≥ minHoldoutRows (200) rows (meta: ≥ minMetaHoldoutRows 100) on ≥ minHoldoutDates (20) dates;
 //   (a) holdout log-loss < calibrated-v1 baseline log-loss AND < champion log-loss (if a champion exists),
+//   (c) stackers: holdout log-loss < class-conditional base rate AND DM vs it p < alpha (the model must
+//       know more than "which asset class is this row"),
 //       all on the same rows;
 //   (b) Diebold–Mariano test on the per-row log-loss differential (reference − challenger),
 //       Driscoll–Kraay variance (differentials summed per date, Newey–West over dates, lag =
@@ -223,9 +225,9 @@ function fitCalibrator(pairs, ahead) {
  * Returns { n, nDates, lag, challenger, champion, baseline, dmBaseline, dmChampion }.
  * DM differential = reference loss − challenger loss (positive ⇒ challenger better).
  */
-function evaluateHoldout({ ys, dates, pChallenger, pChampion = null, pBaseline, lag }) {
+function evaluateHoldout({ ys, dates, pChallenger, pChampion = null, pBaseline, pClassBase = null, lag }) {
   const L = (ps) => ps.map((p, i) => ll1(p, ys[i]));
-  const lCh = L(pChallenger), lBl = L(pBaseline), lCp = pChampion ? L(pChampion) : null;
+  const lCh = L(pChallenger), lBl = L(pBaseline), lCp = pChampion ? L(pChampion) : null, lCb = pClassBase ? L(pClassBase) : null;
   const dm = (lRef) => {
     const r = tuner.dieboldMariano(lRef.map((v, i) => v - lCh[i]), { dates, lag, h: lag });
     return { stat: r6(r.stat), p: r6(r.p), pOneSided: r6(r.pGreater), meanDiff: r6(r.meanDiff), nDates: r.nDates, lag };
@@ -234,6 +236,7 @@ function evaluateHoldout({ ys, dates, pChallenger, pChampion = null, pBaseline, 
     n: ys.length, nDates: new Set(dates).size, lag,
     challenger: probMetrics(pChallenger, ys), champion: pChampion ? probMetrics(pChampion, ys) : null, baseline: probMetrics(pBaseline, ys),
     dmBaseline: dm(lBl), dmChampion: lCp ? dm(lCp) : null,
+    classBase: pClassBase ? probMetrics(pClassBase, ys) : null, dmClassBase: lCb ? dm(lCb) : null,
   };
 }
 
@@ -258,6 +261,14 @@ function promotionDecision(ev, { hasChampion = false, minRows = RULES.minHoldout
     const refName = hasChampion ? "champion" : "baseline";
     if (ref) add(`(b) Diebold–Mariano vs ${refName} p < ${alpha}`, ref.stat > 0 && ref.p < alpha, `DM stat ${f4(ref.stat)} (positive = challenger better), two-sided p ${f4(ref.p)}, lag ${ref.lag}, ${ref.nDates} dates`);
     else add(`(b) Diebold–Mariano vs ${refName}`, false, "not computable");
+    // (c) Class-conditional base rate (e.g. "alts underperform BTC", "stocks rise 57% of weeks"): a
+    // model must add information beyond which asset class a row belongs to, not just learn the
+    // per-class base rates. Always required when the evaluation carries it.
+    if (ev.classBase) {
+      const cb = ev.classBase.logloss, d = ev.dmClassBase;
+      add("(c) log-loss < class base rate", fin(ch) && fin(cb) && ch < cb, `holdout log-loss ${f4(ch)} vs class-conditional base rate ${f4(cb)}`);
+      add(`(c) Diebold–Mariano vs class base rate p < ${alpha}`, !!d && d.stat > 0 && d.p < alpha, d ? `DM stat ${f4(d.stat)}, two-sided p ${f4(d.p)}` : "not computable");
+    }
   }
   const failed = checks.filter((c) => !c.pass);
   const promote = failed.length === 0;
@@ -422,7 +433,17 @@ async function computeCycle(job) {
         catch (e) { champErr = `champion v${champ.version} could not be evaluated: ${e.message}`; }
       }
       const pBl = hRows.map((r) => cal.apply(fin(r.pRaw) ? r.pRaw : 0.5));
-      const ev = hRows.length ? evaluateHoldout({ ys, dates, pChallenger: pCh, pChampion: pCp, pBaseline: pBl, lag }) : null;
+      // Class-conditional base rates from the training window only.
+      const cbr = {};
+      for (const r of split.train) {
+        if (target === "yEx" && bench.has(r.assetId)) continue;
+        const y = labelOf(r, target);
+        if (y !== 0 && y !== 1) continue;
+        const k = r.assetClass || "other";
+        (cbr[k] ||= { n: 0, s: 0 }); cbr[k].n++; cbr[k].s += y;
+      }
+      const pCb = hRows.map((r) => { const c = cbr[r.assetClass || "other"]; return c && c.n ? (c.s + 1) / (c.n + 2) : cal.baseRate; });
+      const ev = hRows.length ? evaluateHoldout({ ys, dates, pChallenger: pCh, pChampion: pCp, pBaseline: pBl, pClassBase: pCb, lag }) : null;
       if (ev && champErr) ev.championError = champErr;
       const dec = promotionDecision(ev, { hasChampion: !!champ });
       stackerDecisions[target] = dec;
