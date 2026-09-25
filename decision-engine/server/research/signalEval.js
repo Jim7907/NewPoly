@@ -217,7 +217,8 @@ function buildPanel(ds, opts) {
   for (let d = 1; d < T; d++) gaps.push(dateList[d] - dateList[d - 1]);
   const step = median(gaps) || (ds.tf || 86400) * 1000;
   const span = median(spans) || ahead * (ds.tf || 86400) * 1000;
-  const lag = isNum(opts.lag) ? Math.max(0, Math.floor(opts.lag)) : Math.max(ahead, Math.ceil(span / step - 1e-9));
+  const mult = isNum(opts.lagMult) && opts.lagMult > 0 ? opts.lagMult : 1;
+  const lag = isNum(opts.lag) ? Math.max(0, Math.floor(opts.lag)) : Math.ceil(mult * Math.max(ahead, Math.ceil(span / step - 1e-9)));
   return {
     rows, N, T, dateList, dateIdx, assetIdx, classIdx, regIdx, y, lag,
     nAssets: assets.size, classNames: [...classes.keys()], regimeNames: [...regimes.keys()],
@@ -368,7 +369,9 @@ function assignVerdicts(stats, q, minN) {
 
 /**
  * reportCard(ds, { target="ret", byRegime=true, minN=200, q=0.10, mode="auto", minXS=5,
- *                  assetClass?, from?, to?, lag? })
+ *                  assetClass?, from?, to?, lag?, lagMult=1 })
+ *   lagMult scales the NW lag (robustness check: Bartlett weights under-correct persistent,
+ *   market-wide predictors on overlapping labels; lagMult=2 is the conservative variant).
  *   → { target, mode, horizon, ahead, lag, nRows, nDates, nAssets, baseRate, signals: {id: SignalStat},
  *       families: {name: SignalStat (+ "pooled" = pRaw − 0.5)}, fdr, familyFdr, summary, built }
  */

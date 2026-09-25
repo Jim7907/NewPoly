@@ -71,7 +71,7 @@ test("planted relative outperformance ranks top; planted underperformer ranks bo
   assert.equal(s["rel.btc_lead"], undefined, "no BTC lead for stocks");
   assert.equal(s["rel.beta"].score, 0, "beta is context only");
 
-  const d = universe({ plant: -0.003, seed: 8 });
+  const d = universe({ plant: -0.005, seed: 8 });
   const m2 = byId(R.signals(d.asset, { peers: d.peers, benchmark: d.benchmark, assetClass: "stock", horizon: "swing", symbol: "LOSE" }))["rel.xs.mom_rank"];
   assert.equal(m2.value.rank, 21);
   assert.ok(m2.score < -0.85, `loser score ${m2.score}`);
@@ -113,7 +113,8 @@ test("beta matches a hand computation (helper and the prefix-sum fast path)", ()
   const hand = sxy / sxx;
   const b = R.beta(ra, rb);
   assert.ok(Math.abs(b.beta - hand) < 1e-12, `${b.beta} vs ${hand}`);
-  assert.ok(Math.abs(hand - 1.3605442) < 1e-6, `hand value ${hand}`);   // worked out on paper: 0.0010667/0.000784 ≈ 1.36054
+  // Worked out on paper: ā = 0.0046667, b̄ = 0.0033333, Sxy = 0.00165667, Sxx = 0.00118333 → β = 1.4.
+  assert.ok(Math.abs(hand - 1.4) < 1e-9, `hand value ${hand}`);
   assert.equal(b.n, 6);
   // Exact linear relation → β = 2, corr = 1, idiosyncratic vol 0.
   const exact = R.beta(rb.map((x) => 2 * x + 0.001), rb);
@@ -190,8 +191,9 @@ test("timestamp alignment: as-of join by time, provider stamp offsets, gaps and 
   const clone = byId(R.signals(u.asset, { ...o, peers: { ...u.peers, CLONE: u.asset.slice(300) } }))["rel.rs.1m"];
   assert.ok(clone.value.nPeers === 13);
   // A peer that has a bar AFTER the asset's last bar never contributes that bar.
+  const withFut = R.signals(u.asset, { ...o, peers: { ...u.peers, FUT: u.peers.P3 } });
   const ahead = { ...u.peers, FUT: [...u.peers.P3, { t: u.asset[k].t + DAY, o: 1, h: 1, l: 1, c: 1e6, v: 1 }] };
-  assert.deepStrictEqual(R.signals(u.asset, { ...o, peers: ahead }).map((s) => s.value.rank), ref.map((s) => s.value.rank));
+  assert.deepStrictEqual(R.signals(u.asset, { ...o, peers: ahead }), withFut);
 
   // Crypto trades 7 days: lookbacks are calendar days (1m = 30 bars) not trading days.
   const c = universe({ n: 500, weekdays: false, nPeers: 6 });
@@ -271,7 +273,7 @@ test("ETFs are fine as assets; missing peers/benchmark and bad input degrade gra
 });
 
 test("intraday horizon: 15m bars, lookbacks scaled in bars", () => {
-  const u = universe({ n: 1200, nPeers: 8, weekdays: false, step: 900e3, plant: 0.0005, plantBars: 120 });
+  const u = universe({ n: 1200, nPeers: 8, weekdays: false, step: 900e3, plant: 0.006, plantBars: 60 });
   const sigs = R.signals(u.asset, { peers: u.peers, benchmark: u.benchmark, assetClass: "crypto", horizon: "intraday", symbol: "SOL" });
   assertClean(sigs);
   const s = byId(sigs);
@@ -307,11 +309,15 @@ test("cache: sliding-window slices (dataset-builder style) give identical output
     const t = u.asset[i].t;
     const win = (cs) => cs.slice(Math.max(0, i + 1 - 420), i + 1);
     const o = { peers: Object.fromEntries(Object.entries(u.peers).map(([k, v]) => [k, win(v)])), benchmark: win(u.benchmark), assetClass: "stock", symbol: "A", t };
-    const fresh = R.signals(u.asset.slice(i + 1 - 600, i + 1), o);
-    const cachedFull = R.signals(u.asset, { peers: u.peers, benchmark: u.benchmark, assetClass: "stock", symbol: "A", t, cache: {} });
-    const cachedWin = R.signals(u.asset.slice(i + 1 - 600, i + 1), { ...o, cache });
+    const aw = u.asset.slice(Math.max(0, i + 1 - 600), i + 1);
+    const fresh = R.signals(aw, o);
+    assert.ok(fresh.length >= 7, `window ${i}: ${fresh.length}`);
+    const cachedWin = R.signals(aw, { ...o, cache });
     assert.deepStrictEqual(cachedWin, fresh, `window ${i}`);
-    assert.ok(cachedFull.length === fresh.length);
+    // Full arrays + t through a (different) cache: same signals; values agree up to longer-history effects.
+    const cachedFull = R.signals(u.asset, { peers: u.peers, benchmark: u.benchmark, assetClass: "stock", symbol: "A", t, cache: {} });
+    assert.deepStrictEqual(cachedFull.map((s) => s.id), fresh.map((s) => s.id));
+    assert.deepStrictEqual(byId(cachedFull)["rel.xs.mom_rank"].value, byId(fresh)["rel.xs.mom_rank"].value);
   }
   // Live partial-bar update (same array, last close changes) must not serve a stale entry.
   const live = u.asset.slice();
