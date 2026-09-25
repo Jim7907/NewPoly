@@ -41,6 +41,50 @@ warm start: walk-forward backtests on history seed the calibrator + weights on f
 The design choices and their evidence are in **[docs/RESEARCH.md](docs/RESEARCH.md)**. The
 module interfaces are in **[docs/CONTRACT.md](docs/CONTRACT.md)**.
 
+## v2: self-learning and self-improvement
+
+The engine now measures, retrains and upgrades itself, and it refuses any upgrade it can't justify statistically.
+
+```
+point-in-time panel dataset (65 assets × ~1,600 bars; swing / position / intraday; no lookahead)
+      │
+signal report card: IC per signal (Fama–MacBeth cross-sectional + point-in-time timing IC),
+  Newey–West t-stats, Benjamini–Hochberg FDR, stability, per-regime / per-class  → evidence-gated mask
+      │
+challengers: stacked models for y (up), yEx (beat SPY/BTC), tbLong (bracket hits target) + meta-labeler,
+  purged walk-forward, calibrated; thresholds tuned by nested walk-forward with deflated Sharpe + PBO
+      │
+promotion gate, evaluated on the most recent 20% of dates, which neither model trained on:
+  (a) log-loss beats the calibrated v1 baseline AND the current champion
+  (b) Diebold–Mariano p < 0.10
+  (c) beats the class-conditional base rate, so a model can't win by learning "alts lag BTC"
+      │
+versioned model registry (champion / challenger / retired, rollback) → hot-reloaded into live serving
+      │
+live outcomes → drift detection (Page–Hinkley + ADWIN) → de-risk (+0.05 min confidence, ½ size) + early retrain
+```
+
+Cycles run every 6 h per horizon in a worker thread; the **LAB** tab shows each cycle, the champions,
+the report card and drift state. The **RANKINGS** tab ranks the research universe by the probability of beating the benchmark.
+
+### What the measurements say (see [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) and [docs/AUDIT.md](docs/AUDIT.md))
+- **Daily horizons (5-day, 20-day):** 0 of ~40 signals survive multiple-testing control, for direction,
+  excess return and bracket outcome. The v1 pooled probability has no out-of-sample skill. The live
+  engine therefore mostly abstains, and **no model has been promoted**, because none beats the base
+  rates significantly on the holdout.
+- **The only consistent daily pattern is cross-sectional momentum** on excess returns (IC +0.02,
+  t ≈ 2, the same sign in 5 of 6 years). It's weak and not yet significant, and it's the leading
+  candidate for the next promotion as data accumulates.
+- **Intraday crypto has real, significant structure** (15/34 signals pass FDR: short-term reversal plus a
+  BTC→alt lead), but its size (0.3–6 bp per 2 h) is smaller than taker costs (30 bp). It stays analysis-only unless fills are at maker fees.
+- **Audit:** 30+ issues found; the critical ones are fixed:
+  - the calibrator was inventing edges on noise;
+  - the calibration signals differed between training and live serving;
+  - the weight learner rewarded drift instead of skill;
+  - stock labels ran on calendar days instead of trading days;
+  - the same evidence was counted twice;
+  - the data layer was missing from git.
+
 ## Quick start
 
 ```bash
