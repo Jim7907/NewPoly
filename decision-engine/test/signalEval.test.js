@@ -186,3 +186,36 @@ test("signalMask maps verdicts to confidence multipliers", () => {
   const rep2 = E.reportCard(ds, { target: "ret", minN: 5000 });
   assert.ok(Object.values(E.signalMask(rep2)).every((v) => v === 0.8));
 });
+
+test("timing IC is free of the in-sample-centring bias that flags momentum on random walks", () => {
+  // Pure random walks (common factor + drift): a trailing-return signal has NO predictive power.
+  // Ranking signal and target over each asset's full sample ("tsfull") is biased negative by
+  // ≈ −√(k·ahead)/T; the point-in-time timing IC ("ts", the default) is not.
+  const DAY = 86400000, t0 = Date.UTC(2021, 0, 4), ahead = 5, k = 250, T = 600, A = 30;
+  const legacy = [], pit = [];
+  for (const seed of [3, 5, 7, 9]) {
+    const r = prng(seed);
+    const W = T + 260 + ahead;
+    const m = Array.from({ length: W }, () => gauss(r));
+    const rows = [];
+    for (let a = 0; a < A; a++) {
+      const cum = [0];
+      for (let i = 0; i < W; i++) cum.push(cum[i] + 0.0004 + 0.015 * (0.5 * m[i] + 0.866 * gauss(r)));
+      for (let i = 260; i < 260 + T; i++) {
+        const y = cum[i + 1 + ahead] - cum[i + 1];
+        rows.push({ assetId: `STOCK:S${a}`, assetClass: "stock", t: t0 + (i - 260) * DAY, atrPct: 0.02, regime: { label: "x" },
+          sig: { mom: [Math.tanh((cum[i + 1] - cum[i + 1 - k]) / (0.015 * Math.sqrt(k))), 1] }, fam: {}, pRaw: 0.5,
+          lab: { ret: y, exRet: y, tbLongRet: y, tEnd: t0 + (i - 260 + ahead) * DAY } });
+      }
+    }
+    rows.sort((p, q) => p.t - q.t || (p.assetId < q.assetId ? -1 : 1));
+    const ds = { ahead, tf: 86400, benchmarks: {}, signalIds: ["mom"], rows };
+    const rep = E.reportCard(ds, { target: "ret", byRegime: false, legacyTs: true });
+    legacy.push(rep.signals.mom.tsFull.ic);
+    pit.push(rep.signals.mom.ts.ic);
+    assert.equal(rep.signals.mom.ic, rep.signals.mom.ts.ic);          // the default headline is the timing IC
+  }
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+  assert.ok(mean(legacy) < -0.05, `legacy full-sample IC ${mean(legacy)}`);
+  assert.ok(Math.abs(mean(pit)) < 0.02, `point-in-time IC ${mean(pit)}`);
+});

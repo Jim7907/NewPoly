@@ -9,15 +9,21 @@
 //
 // Two Information Coefficients are computed for every signal; `mode` picks the headline one
 // (default "auto": exRet → "xs", ret / tbLong → "ts"):
-//   xs  Fama–MacBeth cross-sectional rank IC. Per date — and within asset class, so a signal
-//       that only differs between stocks and crypto is not mistaken for stock-picking skill —
-//       Spearman(x, y) across assets (≥ minXS names); per-date ICs averaged over dates.
-//       t-stat: Newey–West (Bartlett) on the per-date IC series.
-//   ts  Pooled time-series rank IC: x and y rank-standardised within each asset (so it measures
-//       "does this asset do better when its own signal is higher", not level differences between
-//       assets), pooled; SE by Driscoll–Kraay — per-date sums of the centred products, Newey–West
-//       across dates — which is robust to the cross-sectional correlation of same-day returns
-//       and to overlapping labels. Market-wide signals (macro, fear-greed) only have a ts IC.
+//   xs  Fama–MacBeth cross-sectional rank IC (the contract's definition). Per date — and within
+//       asset class, so a signal that only differs between stocks and crypto is not mistaken for
+//       stock-picking skill — Spearman(x, y) across assets (≥ minXS names); per-date ICs averaged
+//       over dates. t-stat: Newey–West (Bartlett) on the per-date IC series. This is the natural
+//       test for a RELATIVE target; for "ret" it is (within a class) the same ranking as exRet and
+//       says nothing about direction, hence:
+//   ts  Pooled time-series "timing" IC for ABSOLUTE targets: z = rank of x against the asset's own
+//       PAST values only (point-in-time), ỹ = target / (ATR%·√ahead) left uncentred;
+//       IC = Σz·ỹ / √(Σz²·Σỹ²). Driscoll–Kraay SE (per-date sums, Newey–West across dates), robust
+//       to same-day cross-correlation and overlapping labels. Unbiased under unpredictable returns.
+//       Ranking x and y over each asset's full sample instead ("tsfull", kept for diagnostics only)
+//       is biased NEGATIVE for signals built from trailing returns — the in-sample mean of the
+//       target overlaps the signal's lookback (Stambaugh-type, ≈ −√(k·ahead)/T): on pure random
+//       walks it "finds" 12-month momentum at t ≈ −4 (test/signalEval.test.js, docs/DIAGNOSTICS.md).
+//   Market-wide signals (macro, fear-greed) have no within-date dispersion → only a ts IC.
 // NW lag = max(ahead, label span in date-grid steps): exactly `ahead` for a single-class regular
 // panel, larger (conservative) when a 5-trading-day stock label spans 7 calendar-day grid steps.
 //
@@ -211,6 +217,24 @@ function buildPanel(ds, opts) {
     y[k] = tv(r.lab);
     if (k % 7 === 0 && isNum(r.lab.tEnd)) spans.push(r.lab.tEnd - r.t);
   }
+  // Timing-IC target: y in units of the bar-i volatility over the label window (point-in-time
+  // ATR% · √ahead), winsorised at ±6, NOT centred (see tsIC).
+  const aheadN = Math.max(1, (ds.ahead | 0) || 1);
+  const scales = rows.map((r) => (isNum(r.atrPct) && r.atrPct > 0 ? r.atrPct * Math.sqrt(aheadN) : NaN));
+  const medScale = median(scales) || 0.02;
+  const ys = new Float64Array(N);
+  for (let k = 0; k < N; k++) ys[k] = clamp(y[k] / (isNum(scales[k]) ? scales[k] : medScale), -6, 6);
+  // Every row of each panel asset (labelled or not, inside the from/to window or before it) in time
+  // order: the history a point-in-time rank may look back on.
+  const pos = new Map(rows.map((r, k) => [r, k]));
+  const hist = new Map();
+  for (const r of ds.rows || []) {
+    if (!r || !assets.has(r.assetId)) continue;
+    let h = hist.get(r.assetId);
+    if (!h) hist.set(r.assetId, (h = []));
+    h.push(r);
+  }
+  for (const h of hist.values()) h.sort((a, b) => a.t - b.t);
   const T = dateList.length;
   const ahead = Math.max(1, (ds.ahead | 0) || 1);
   const gaps = [];
@@ -220,14 +244,81 @@ function buildPanel(ds, opts) {
   const mult = isNum(opts.lagMult) && opts.lagMult > 0 ? opts.lagMult : 1;
   const lag = isNum(opts.lag) ? Math.max(0, Math.floor(opts.lag)) : Math.ceil(mult * Math.max(ahead, Math.ceil(span / step - 1e-9)));
   return {
-    rows, N, T, dateList, dateIdx, assetIdx, classIdx, regIdx, y, lag,
+    rows, N, T, dateList, dateIdx, assetIdx, classIdx, regIdx, y, ys, lag, hist, pos,
     nAssets: assets.size, classNames: [...classes.keys()], regimeNames: [...regimes.keys()],
     half: Math.floor(T / 2),
   };
 }
 
-// Pooled time-series rank IC with Driscoll–Kraay SE. idx: row indices (x finite).
-function tsIC(P, x, idx) {
+// Point-in-time rank of the signal against the asset's OWN PAST values only: mid-rank percentile of
+// x_t among {x_s : s < t} ∪ {x_t}, mapped to unit variance, z = (pct − ½)·√12. Needs ≥ minHist prior
+// values. Fenwick tree over the compressed values → O(n log n) per asset.
+function pitZ(P, get, minHist = 20) {
+  const z = new Float64Array(P.N).fill(NaN);
+  const SQ12 = Math.sqrt(12);
+  for (const h of P.hist.values()) {
+    const vals = h.map(get);
+    const uniqVals = [...new Set(vals.filter(isNum))].sort((a, b) => a - b);
+    const U = uniqVals.length;
+    if (!U) continue;
+    const bit = new Float64Array(U + 1);
+    const add = (i) => { for (; i <= U; i += i & -i) bit[i] += 1; };
+    const sum = (i) => { let s = 0; for (; i > 0; i -= i & -i) s += bit[i]; return s; };
+    const rankOf = (v) => { let lo = 0, hi = U - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (uniqVals[m] < v) lo = m + 1; else hi = m; } return lo + 1; };
+    let m = 0;
+    for (let j = 0; j < h.length; j++) {
+      const v = vals[j];
+      if (!isNum(v)) continue;
+      const r = rankOf(v);
+      if (m >= minHist) {
+        const k = P.pos.get(h[j]);
+        if (k != null) {
+          const lt = sum(r - 1), le = sum(r);
+          z[k] = ((lt + 0.5 * (le - lt) + 0.5) / (m + 1) - 0.5) * SQ12;
+        }
+      }
+      add(r); m++;
+    }
+  }
+  return z;
+}
+
+// Pooled time-series "timing" IC, free of the look-ahead bias of in-sample centring.
+//   IC = Σ z·ỹ / √(Σz² · Σỹ²),  z = point-in-time rank of x vs its own past, ỹ = vol-scaled target,
+//   uncentred. Because z_t depends only on data ≤ t and ỹ_t only on returns after t, E[z·ỹ] = 0 when
+//   returns are unpredictable. (Ranking/centring x and y over each asset's FULL sample — "tsfull" —
+//   is biased NEGATIVE for signals built from trailing returns: the sample mean of the target
+//   overlaps the signal's lookback, a Stambaugh-type bias of order −√(k·ahead)/T; see
+//   docs/DIAGNOSTICS.md.) SE: Driscoll–Kraay — per-date sums of the centred products, Newey–West
+//   across dates — robust to same-day cross-correlation and overlapping labels.
+function tsIC(P, z, idx) {
+  let N = 0, Szz = 0, Syy = 0, Szy = 0;
+  for (const k of idx) {
+    const a = z[k], b = P.ys[k];
+    if (!isNum(a) || !isNum(b)) continue;
+    N++; Szz += a * a; Syy += b * b; Szy += a * b;
+  }
+  if (N < 20 || !(Szz > EPS) || !(Syy > EPS)) return null;
+  const ic = Szy / Math.sqrt(Szz * Syy);
+  const pbar = Szy / N;
+  const S = new Float64Array(P.T);
+  const seen = new Uint8Array(P.T);
+  for (const k of idx) {
+    const a = z[k], b = P.ys[k];
+    if (!isNum(a) || !isNum(b)) continue;
+    const d = P.dateIdx[k];
+    S[d] += a * b - pbar; seen[d] = 1;
+  }
+  const V = nwSum(S, P.lag) / (Szz * Syy);
+  const se = V > 0 ? Math.sqrt(V) : null;
+  let nDates = 0;
+  for (let d = 0; d < P.T; d++) nDates += seen[d];
+  return { ic, se, t: se ? ic / se : null, n: N, nEff: se ? Math.min(N, 1 / V) : null, nDates };
+}
+
+// LEGACY / diagnostic only ("tsfull"): Spearman within each asset over its full sample, pooled, with
+// Driscoll–Kraay SE. Biased negative for trailing-return signals (see tsIC) — kept to measure the bias.
+function tsFullIC(P, x, idx) {
   const byAsset = new Map();
   for (const k of idx) { const a = P.assetIdx[k]; let g = byAsset.get(a); if (!g) byAsset.set(a, (g = [])); g.push(k); }
   const prods = [], pd = [];
@@ -248,13 +339,10 @@ function tsIC(P, x, idx) {
   for (const p of prods) ic += p;
   ic /= N;
   const S = new Float64Array(P.T);
-  const seen = new Uint8Array(P.T);
-  for (let j = 0; j < N; j++) { S[pd[j]] += prods[j] - ic; seen[pd[j]] = 1; }
+  for (let j = 0; j < N; j++) S[pd[j]] += prods[j] - ic;
   const V = nwSum(S, P.lag) / (N * N);
   const se = V > 0 ? Math.sqrt(V) : null;
-  let nDates = 0;
-  for (let d = 0; d < P.T; d++) nDates += seen[d];
-  return { ic, se, t: se ? ic / se : null, n: N, nEff: se ? Math.min(N, 1 / V) : null, nDates };
+  return { ic, se, t: se ? ic / se : null, n: N, nEff: se ? Math.min(N, 1 / V) : null, nDates: null };
 }
 
 // Fama–MacBeth cross-sectional rank IC (per date, within class; weighted by group size).
@@ -285,16 +373,24 @@ function xsIC(P, x, idx, minXS) {
   return { ic: nw.mean, se: nw.se, t: nw.t, n: N, nEff: V ? Math.min(N, 1 / V) : null, nDates: series.length };
 }
 
-function icOf(P, x, idx, mode, minXS) { return mode === "xs" ? xsIC(P, x, idx, minXS) : tsIC(P, x, idx); }
+function icOf(P, v, idx, mode, minXS) {
+  if (mode === "xs") return xsIC(P, v.x, idx, minXS);
+  if (mode === "tsfull") return tsFullIC(P, v.x, idx);
+  return tsIC(P, v.z, idx);
+}
 const brief = (s) => (s ? { n: s.n, ic: r4(s.ic), icT: r4(s.t) } : null);
 
-function evalVector(P, x, id, family, o) {
+function evalVector(P, get, id, family, o) {
+  const x = new Float64Array(P.N);
+  for (let k = 0; k < P.N; k++) x[k] = get(P.rows[k]);
+  const v = { x, z: pitZ(P, get) };
   const idx = [];
   for (let k = 0; k < P.N; k++) if (isNum(x[k])) idx.push(k);
   const n = idx.length;
-  const ts = n >= 20 ? tsIC(P, x, idx) : null;
+  const ts = n >= 20 ? tsIC(P, v.z, idx) : null;
   const xs = n >= 20 ? xsIC(P, x, idx, o.minXS) : null;
-  const prim = o.mode === "xs" ? xs : ts;
+  const tsFull = o.mode === "tsfull" || o.legacyTs ? (n >= 20 ? tsFullIC(P, x, idx) : null) : undefined;
+  const prim = o.mode === "xs" ? xs : o.mode === "tsfull" ? tsFull : ts;
 
   // Hit rate and conditional means (all targets: "does y share the sign of x?").
   let nL = 0, nS = 0, sumL = 0, sumS = 0, hits = 0, upL = 0, dnS = 0;
@@ -316,19 +412,19 @@ function evalVector(P, x, id, family, o) {
   const byClass = {};
   for (let c = 0; c < P.classNames.length; c++) {
     const sub = idx.filter((k) => P.classIdx[k] === c);
-    if (sub.length >= 20) byClass[P.classNames[c]] = brief(icOf(P, x, sub, o.mode, o.minXS)) || { n: sub.length, ic: null, icT: null };
+    if (sub.length >= 20) byClass[P.classNames[c]] = brief(icOf(P, v, sub, o.mode, o.minXS)) || { n: sub.length, ic: null, icT: null };
   }
   const byRegime = {};
   if (o.byRegime) {
     for (let g = 0; g < P.regimeNames.length; g++) {
       const sub = idx.filter((k) => P.regIdx[k] === g);
-      if (sub.length >= Math.max(50, o.minN / 4)) byRegime[P.regimeNames[g]] = brief(icOf(P, x, sub, o.mode, o.minXS)) || { n: sub.length, ic: null, icT: null };
+      if (sub.length >= Math.max(50, o.minN / 4)) byRegime[P.regimeNames[g]] = brief(icOf(P, v, sub, o.mode, o.minXS)) || { n: sub.length, ic: null, icT: null };
     }
   }
   const h1idx = idx.filter((k) => P.dateIdx[k] < P.half), h2idx = idx.filter((k) => P.dateIdx[k] >= P.half);
   const minHalf = Math.max(20, Math.floor(o.minN / 4));
-  const h1 = h1idx.length >= minHalf ? icOf(P, x, h1idx, o.mode, o.minXS) : null;
-  const h2 = h2idx.length >= minHalf ? icOf(P, x, h2idx, o.mode, o.minXS) : null;
+  const h1 = h1idx.length >= minHalf ? icOf(P, v, h1idx, o.mode, o.minXS) : null;
+  const h2 = h2idx.length >= minHalf ? icOf(P, v, h2idx, o.mode, o.minXS) : null;
   const stable = h1 && h2 && isNum(h1.ic) && isNum(h2.ic) ? Math.sign(h1.ic) !== 0 && Math.sign(h1.ic) === Math.sign(h2.ic) : null;
 
   return {
@@ -343,6 +439,7 @@ function evalVector(P, x, id, family, o) {
     mode: o.mode,
     xs: xs ? { ic: r4(xs.ic), icT: r4(xs.t), nDates: xs.nDates, n: xs.n } : null,
     ts: ts ? { ic: r4(ts.ic), icT: r4(ts.t), nDates: ts.nDates, n: ts.n } : null,
+    ...(tsFull !== undefined ? { tsFull: tsFull ? { ic: r4(tsFull.ic), icT: r4(tsFull.t), n: tsFull.n } : null } : {}),
     coverage: P.N ? r4(n / P.N) : 0,
     verdict: null, reason: null, qValue: null, significant: false,
   };
@@ -384,6 +481,7 @@ function reportCard(ds, opts = {}) {
     q: isNum(opts.q) ? opts.q : 0.10,
     byRegime: opts.byRegime !== false,
     minXS: isNum(opts.minXS) ? Math.max(3, opts.minXS) : 5,
+    legacyTs: !!opts.legacyTs,
   };
   const P = buildPanel(ds, { ...opts, target });
   const ids = ds.signalIds && ds.signalIds.length ? ds.signalIds
@@ -392,9 +490,8 @@ function reportCard(ds, opts = {}) {
   const signals = {};
   const statList = [];
   for (const id of ids) {
-    const x = new Float64Array(P.N).fill(NaN);
-    for (let k = 0; k < P.N; k++) { const v = P.rows[k].sig && P.rows[k].sig[id]; if (v && isNum(v[0]) && isNum(v[1])) x[k] = v[0] * v[1]; }
-    const s = evalVector(P, x, id, familyOf(ds, id), o);
+    const get = (r) => { const v = r.sig && r.sig[id]; return v && isNum(v[0]) && isNum(v[1]) ? v[0] * v[1] : NaN; };
+    const s = evalVector(P, get, id, familyOf(ds, id), o);
     signals[id] = s; statList.push(s);
   }
   const fdr = assignVerdicts(statList, o.q, o.minN);
@@ -403,15 +500,12 @@ function reportCard(ds, opts = {}) {
   const families = {};
   const famList = [];
   for (const f of famNames) {
-    const x = new Float64Array(P.N).fill(NaN);
-    for (let k = 0; k < P.N; k++) { const v = P.rows[k].fam && P.rows[k].fam[f]; if (isNum(v)) x[k] = v; }
-    const s = evalVector(P, x, `fam.${f}`, f, o);
+    const get = (r) => (r.fam && isNum(r.fam[f]) ? r.fam[f] : NaN);
+    const s = evalVector(P, get, `fam.${f}`, f, o);
     families[f] = s; famList.push(s);
   }
   {
-    const x = new Float64Array(P.N).fill(NaN);
-    for (let k = 0; k < P.N; k++) { const v = P.rows[k].pRaw; if (isNum(v)) x[k] = v - 0.5; }
-    const s = evalVector(P, x, "pooled.pRaw", "pooled", o);
+    const s = evalVector(P, (r) => (isNum(r.pRaw) ? r.pRaw - 0.5 : NaN), "pooled.pRaw", "pooled", o);
     families.pooled = s; famList.push(s);
   }
   const familyFdr = assignVerdicts(famList, o.q, o.minN);

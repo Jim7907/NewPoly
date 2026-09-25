@@ -217,6 +217,17 @@ if (cfg.NODE_ENV === "production") {
 // ── Bootstrap ──
 async function main() {
   await db.initDB();
+  // Audit 2026-09: the calibrator input is now the backtest-equivalent pRaw and several signal
+  // definitions changed (regime.trend.state context-only, crypto 52-week window, forming-bar volume,
+  // MTF horizon tags). Pairs/calibrators fitted under the old definitions are a different statistic:
+  // drop them once and let the warm start refit.
+  if (db.getSetting("calib_schema") !== "audit-2026-09") {
+    for (const h of Object.keys(cfg.HORIZONS)) {
+      db.setSetting(`warm_${h}`, "");
+      for (const cls of ["crypto", "stock"]) { db.saveModel(`pairs:${h}|${cls}`, []); db.saveModel(`calib:${h}|${cls}`, null); }
+    }
+    db.setSetting("calib_schema", "audit-2026-09");
+  }
   engine.loadState();
 
   // Real-time crypto ticks → paper stops/targets + UI price flashes (throttled per symbol).

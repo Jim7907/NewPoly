@@ -96,7 +96,8 @@ function logDecision(d, resolveAt) {
   const votes = (d.signals || []).map(s => ({ id: s.id, family: s.family, score: +(+s.score).toFixed(4), confidence: +(+s.confidence).toFixed(4) }));
   run(`INSERT INTO decisions (id,ts,assetId,symbol,assetClass,horizon,action,pUp,pRaw,confidence,agreement,price,regime,families,votes,resolveAt)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, d.ts || nowIso(), d.assetId, d.symbol, d.assetClass, d.horizon, d.action, d.pUp, d.pRaw, d.confidence,
+    // audit: the pRaw column feeds the calibrator, so store the backtest-equivalent pRawCal when present
+    [id, d.ts || nowIso(), d.assetId, d.symbol, d.assetClass, d.horizon, d.action, d.pUp, d.pRawCal ?? d.pRaw, d.confidence,
      d.agreement ?? null, d.price, d.regime?.label || null, JSON.stringify(d.families || {}), JSON.stringify(votes), resolveAt]);
   return id;
 }

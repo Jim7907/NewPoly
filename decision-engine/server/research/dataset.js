@@ -201,6 +201,9 @@ function codeHash() {
   }
   return h.digest("hex").slice(0, 16);
 }
+// The code THIS thread runs: hashed right after the analyzers were required (worker threads hash
+// their own copy at start-up, since a worker loads the files as they are on disk at that moment).
+const LOADED_HASH = codeHash();
 
 // ───────────────────────────── relative family (optional) ─────────────────────────────
 function loadRelative(override) {
@@ -486,7 +489,7 @@ function buildJob(S, cfg, a, data, extra) {
 
 // ───────────────────────────── execution (in-process or worker threads) ─────────────────────────────
 // shared = { series: { id → { asset, candles } }, macro, fng } — sent once per worker.
-function runJobsInWorkers(jobs, shared, nWorkers, onRowCount) {
+function runJobsInWorkers(jobs, shared, nWorkers, onRowCount, hashes) {
   // Balance by number of rows to compute (greedy longest-first).
   const buckets = Array.from({ length: nWorkers }, () => ({ load: 0, idx: [] }));
   const order = jobs.map((j, idx) => ({ idx, load: Math.max(0, Math.ceil((j.kTo - j.kFrom + 1) / j.stride)) })).sort((a, b) => b.load - a.load);
@@ -500,6 +503,7 @@ function runJobsInWorkers(jobs, shared, nWorkers, onRowCount) {
       const missing = b.idx.filter((k) => !results[k]);
       const env = makeEnv(shared);
       const rel = loadRelative();
+      if (missing.length) hashes.add(LOADED_HASH);
       for (const k of missing) {
         results[k] = computeAssetRows(jobs[k], env, rel, () => onRowCount(1));
         results[k].errors = { ...(results[k].errors || {}), worker: why };
@@ -512,6 +516,7 @@ function runJobsInWorkers(jobs, shared, nWorkers, onRowCount) {
     w.on("message", (m) => {
       if (!m) return;
       if (m.type === "progress") onRowCount(m.n);
+      else if (m.type === "hash") hashes.add(m.h);
       else if (m.type === "result") { results[b.idx[m.j]] = m.result; got++; }
       else if (m.type === "done") { settled = true; resolve(); }
     });
@@ -525,6 +530,7 @@ if (!isMainThread && workerData && workerData.__researchDatasetWorker) {
   const { jobs, shared } = workerData;
   const env = makeEnv(shared);
   const rel = loadRelative();
+  parentPort.postMessage({ type: "hash", h: codeHash() });   // relative.js is loaded by now too
   let pending = 0;
   jobs.forEach((job, j) => {
     const result = computeAssetRows(job, env, rel, () => {
@@ -543,10 +549,14 @@ function defaultWorkers(nAssets) {
   return Math.max(1, Math.min(4, (os.cpus() || []).length - 1));
 }
 
+// → { results, workers, hashes: Set of the code hashes that computed the rows }
 async function execute(jobs, shared, opts, relMod, progress) {
   const injected = opts.relative && typeof opts.relative.signals === "function";
   const nW = Math.max(1, Math.min(jobs.length, Math.floor(isNum(opts.workers) ? opts.workers : defaultWorkers(jobs.length))));
+  const hashes = new Set();
+  if (!jobs.length) return { results: [], workers: 0, hashes };
   if (nW <= 1 || injected) {
+    hashes.add(LOADED_HASH);
     // In-process (always when an analyzer is injected: functions cannot cross threads). Yields to
     // the event loop between assets so a caller's timers keep running.
     const env = makeEnv(shared);
@@ -555,10 +565,10 @@ async function execute(jobs, shared, opts, relMod, progress) {
       out.push(computeAssetRows(job, env, relMod, () => progress(1)));
       await new Promise((r) => setImmediate(r));
     }
-    return { results: out, workers: 1 };
+    return { results: out, workers: 1, hashes };
   }
-  const results = await runJobsInWorkers(jobs, shared, nW, progress);
-  return { results, workers: nW };
+  const results = await runJobsInWorkers(jobs, shared, nW, progress, hashes);
+  return { results, workers: nW, hashes };
 }
 
 // ───────────────────────────── fetching ─────────────────────────────
@@ -694,8 +704,9 @@ async function buildDataset(opts = {}) {
     if (onProgress && (done - lastEmit >= 50 || done >= total)) { lastEmit = done; onProgress({ phase: "compute", done, total }); }
   };
   const tCompute = Date.now();
-  const { results, workers } = await execute(jobs, { series: sharedSeries(data), macro: inp.macro, fng: inp.fng }, opts, relMod, progress);
+  const { results, workers, hashes } = await execute(jobs, { series: sharedSeries(data), macro: inp.macro, fng: inp.fng }, opts, relMod, progress);
   const computeMs = Date.now() - tCompute;
+  const usedHashes = [...hashes];
 
   const rows = [];
   const signalFamily = {};
@@ -714,6 +725,7 @@ async function buildDataset(opts = {}) {
   const short = assets.filter((a) => data.get(a.id).candles.length < S.warmup + 1).map((a) => a.id);
   if (short.length) notes.push(`not enough candles (< warmup+1) for: ${short.join(", ")}`);
   if (Object.keys(errors).length) notes.push(`analyzer errors: ${JSON.stringify(errors)}`);
+  if (usedHashes.length > 1) notes.push(`MIXED CODE: analyzer/ensemble sources changed while the build ran (${usedHashes.join(", ")}) — rebuild`);
 
   return {
     version: VERSION, horizon: S.horizon, tf: S.tf, ahead: S.ahead, built: new Date().toISOString(),
@@ -723,7 +735,7 @@ async function buildDataset(opts = {}) {
       stride: S.stride, lookback: S.lookback, warmup: S.warmup, regimeEvery: S.regimeEvery,
       relativeInput: S.relativeInput,
       bracket: S.bracket, costsBps: { stock: roundTripCost(cfg, "stock") * 1e4, crypto: roundTripCost(cfg, "crypto") * 1e4 },
-      families: plan, relative: !!relMod, codeHash: codeHash(),
+      families: plan, relative: !!relMod, codeHash: usedHashes.length === 1 ? usedHashes[0] : usedHashes.length ? `mixed:${usedHashes.join("+")}` : LOADED_HASH,
       candles: Object.fromEntries(assets.map((a) => { const c = data.get(a.id).candles; return [a.id, { n: c.length, from: c.length ? c[0].t : null, to: c.length ? c[c.length - 1].t : null }]; })),
       timing: { totalMs: Date.now() - tStart, fetchMs: inp.fetchMs, computeMs, workers, rows: rows.length },
       notes,
@@ -826,7 +838,7 @@ async function updateDataset(ds, opts = {}) {
   const total = jobs.reduce((s, j) => s + Math.max(0, Math.ceil((j.kTo - j.kFrom + 1) / j.stride)), 0);
   let done = 0;
   const progress = (k) => { done += k; if (onProgress) onProgress({ phase: "compute", done, total }); };
-  const { results, workers } = await execute(jobs, shared, opts, relMod, progress);
+  const { results, workers, hashes } = await execute(jobs, shared, opts, relMod, progress);
   let newRows = 0;
   ds.signalFamily = ds.signalFamily || {};
   for (const r of results) {
@@ -838,8 +850,10 @@ async function updateDataset(ds, opts = {}) {
   ds.signalIds = collectSignalIds(ds.rows);
   ds.universe = uniq([...(ds.universe || []), ...assets.map((a) => a.id)]);
   ds.built = new Date().toISOString();
-  const hashNow = codeHash();
-  const codeChanged = !!(m.codeHash && m.codeHash !== hashNow);
+  // Code that computed the new rows (and matured labels, which use no analyzer code).
+  const used = [...hashes];
+  const hashNow = used.length === 1 ? used[0] : used.length ? `mixed:${used.join("+")}` : LOADED_HASH;
+  const codeChanged = !!(m.codeHash && newRows > 0 && m.codeHash !== hashNow);
   const notes = Array.isArray(m.notes) ? m.notes.slice() : [];
   if (codeChanged) notes.push(`${new Date().toISOString()}: analyzer/ensemble code changed since the build (${m.codeHash} → ${hashNow}); rows before and after this update come from different code — a full rebuild is advised`);
   ds.meta = { ...m, families: plan, relative: !!relMod, notes,

@@ -30,7 +30,7 @@ const brain = require("./brain");
 // ── Learned state ──
 const calibrators = {};               // `${horizon}|${assetClass}` -> Calibrator (+ .baseRate)
 let learner = new WeightLearner();
-const MAX_PAIRS = 20000;
+const MAX_PAIRS_PER_ASSET = 1500;   // audit: was a global slice(-20000) over asset-ordered pairs
 const CLASSES = ["crypto", "stock"];
 const ckey = (h, cls) => `${h}|${cls}`;
 
@@ -50,7 +50,20 @@ function loadState() {
 // score distributions. Pairs are kept per class (most recent MAX_PAIRS).
 function refitCalibrator(horizon, cls, newPairs = []) {
   const key = `pairs:${ckey(horizon, cls)}`;
-  const pairs = (db.loadModel(key) || []).concat(newPairs).slice(-MAX_PAIRS);
+  // Keep the most recent pairs PER ASSET (a global slice(-N) of the asset-ordered warm-start list
+  // silently dropped whole assets — with the 50-stock universe, all of tech — once it exceeded N),
+  // ordered by (asset, time) so overlapping labels stay adjacent for the calibrator's purged folds.
+  const byAsset = new Map();
+  for (const p of (db.loadModel(key) || []).concat(newPairs)) {
+    const k = (p && p.a) || "?";
+    if (!byAsset.has(k)) byAsset.set(k, []);
+    byAsset.get(k).push(p);
+  }
+  const pairs = [];
+  for (const k of [...byAsset.keys()].sort()) {
+    const arr = byAsset.get(k).sort((u, v) => (u.t || 0) - (v.t || 0));
+    pairs.push(...arr.slice(-MAX_PAIRS_PER_ASSET));
+  }
   db.saveModel(key, pairs);
   if (pairs.length < 30) return null;
   const c = new Calibrator();
@@ -115,6 +128,20 @@ function buildSignals(asset, g, horizon, errors) {
   return { signals: clean, regime };
 }
 
+// The signals the calibrator was trained on: backtest.run (useML:false) = base-timeframe technical
+// (ids normalised to tech.<sub>.<name>) + regime, unmasked and unweighted.
+function calibrationSignals(signals, tfSec) {
+  const base = data.tfName(tfSec), out = [];
+  for (const s of signals) {
+    if (s.family === "regime") { out.push(s); continue; }
+    if (s.family !== "technical" || s.id === "tech.mtf.alignment") continue;
+    const m = /^tech\.(\d+[mhdw])\.(.+)$/.exec(s.id);
+    if (!m) out.push(s);
+    else if (m[1] === base) out.push({ ...s, id: `tech.${m[2]}` });
+  }
+  return out;
+}
+
 // Full decision for one asset. Never throws.
 async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, forceLLM = false } = {}) {
   const hc = H(horizon);
@@ -145,6 +172,8 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
   // stores and applies its own mask) and pRaw pooled from that same subset.
   const pit = brain.pitSignals(signals, hc.tf);
   const pitDecision = ensemble.decide({ asset, signals: pit, regime, horizon, price, atr, candles, now: Date.now() });
+  const calDecision = ensemble.decide({ asset, signals: calibrationSignals(signals, hc.tf), regime, horizon, price, atr, candles,
+    now: Date.now(), expectedFamilies: ["technical", "regime"] });
   const row = brain.liveRow(asset, signals, { regime, atrPct, annVol: regime?.annVol ?? null, pRaw: pitDecision.pRaw, tfSec: hc.tf });
   const calC = calibrators[ckey(horizon, asset.assetClass)];
   const preds = brain.predict(horizon, row, { pooledP: calC ? calC.apply(pitDecision.pRaw) : undefined });
@@ -159,8 +188,10 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
     thresholds: th, dataQuality: g.dataQuality,
     equity: portfolio.equity(), openPositions: db.openPositions(),
     probability: preds.probability, meta: preds.meta, sizeMult: dr ? dr.sizeMult ?? 0.5 : 1,
+    calibration: { pRaw: calDecision.pRaw, logOdds: calDecision.logOdds, extraShrink: 0.5 },
   });
   decision.pRawPIT = pitDecision.pRaw;
+  decision.pRawCal = calDecision.pRaw;
   if (preds.relative) decision.relative = { ...preds.relative, rank: rankOf(asset, horizon) };
   if (preds.targetFirst) decision.targetFirst = preds.targetFirst;
   if (dr) decision.derisk = dr;
@@ -180,11 +211,29 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
 // scales each update by 1/ahead (docs/RESEARCH.md §5.2 #4).
 const SAMPLE_MS = { intraday: 15 * 60e3, swing: 24 * 3600e3, position: 24 * 3600e3 };
 function maybeLog(decision) {
+  // Audit: learning samples at a FIXED cadence only — logging on every action change added
+  // near-duplicate, fully overlapping samples exactly at the decision boundary (selection bias) — and
+  // for stocks only in regular hours (weekend/overnight rows all resolve on the same close).
+  if (decision.assetClass === "stock" && !data.marketOpen(Date.now())) return null;
   const last = db.lastDecisionTs(decision.assetId, decision.horizon);
-  const due = !last || Date.now() - new Date(last.ts).getTime() >= (SAMPLE_MS[decision.horizon] || 3600e3) || last.action !== decision.action;
+  const due = !last || Date.now() - new Date(last.ts).getTime() >= (SAMPLE_MS[decision.horizon] || 3600e3);
   if (!due || !(decision.price > 0)) return null;
   const hc = H(decision.horizon);
-  return db.logDecision(decision, Date.now() + hc.ahead * hc.tf * 1000);
+  // Label horizon in the asset's trading time: 5 daily stock bars = 5 sessions, not 5 calendar days.
+  return db.logDecision(decision, data.horizonEnd(decision.assetId, Date.now(), hc.ahead, hc.tf));
+}
+
+// Price at a past time (late resolution): close of the latest 15m/1h bar that started at or before t.
+const LATE_MS = 10 * 60e3;
+async function priceAt(asset, tMs) {
+  for (const tf of [900, 3600]) {
+    const cs = await data.candles(asset, tf, 300).catch(() => []);
+    if (!cs.length || cs[0].t > tMs) continue;
+    let bar = null;
+    for (const c of cs) { if (c.t <= tMs) bar = c; else break; }
+    if (bar && tMs - bar.t < 2 * tf * 1000) return bar.c;
+  }
+  return null;
 }
 
 async function resolveDue(nowMs = Date.now()) {
@@ -193,15 +242,24 @@ async function resolveDue(nowMs = Date.now()) {
   const byHorizon = {};
   for (const d of due) {
     const asset = cfg.ASSETS.find(a => a.id === d.assetId) || { id: d.assetId, symbol: d.symbol, assetClass: d.assetClass };
-    let px = portfolio.lastPrice.get(d.assetId);
-    if (!px) { try { px = (await data.quote(asset))?.price; } catch { /* ignore */ } }
+    let px = null;
+    if (nowMs - d.resolveAt > LATE_MS) {
+      // Audit: resolved late (server down / loop stalled) → use the price AT resolveAt, not the
+      // current one (labels were silently stretched to the outage length). Give up after 14 days.
+      px = await priceAt(asset, d.resolveAt);
+      if (!(px > 0)) { if (nowMs - d.resolveAt > 14 * 86400e3) db.resolveDecision(d.id, null, null, null); continue; }
+    } else {
+      px = portfolio.lastPrice.get(d.assetId);
+      if (!px) { try { px = (await data.quote(asset))?.price; } catch { /* ignore */ } }
+    }
     if (!(px > 0) || !(d.price > 0)) continue;
     const r = Math.log(px / d.price);
     const y = r > 0 ? 1 : 0;
     db.resolveDecision(d.id, px, r, y);
     brain.onResolved({ horizon: d.horizon, p: d.pUp, y, decision: d });
-    learner.update(d.votes || [], y, { scale: 1 / H(d.horizon).ahead });
-    (byHorizon[ckey(d.horizon, d.assetClass)] ||= []).push({ p: d.pRaw, y });
+    // Audit: reward skill, not drift (a no-skill always-bullish stock signal drifted to w≈1.9).
+    learner.update(d.votes || [], y, { scale: 1 / H(d.horizon).ahead, baseRate: calibrators[ckey(d.horizon, d.assetClass)]?.baseRate ?? 0.5 });
+    (byHorizon[ckey(d.horizon, d.assetClass)] ||= []).push({ p: d.pRaw, y, t: Date.parse(d.ts) || nowMs, a: d.assetId });
   }
   db.saveModel("weights", learner.toJSON());
   for (const [k, pairs] of Object.entries(byHorizon)) { const [h, cls] = k.split("|"); refitCalibrator(h, cls, pairs); }
@@ -212,13 +270,14 @@ async function resolveDue(nowMs = Date.now()) {
 async function warmStart({ horizon = currentHorizon(), log = console.log } = {}) {
   const { runInWorker } = require("./learning/worker");
   const pairs = { crypto: [], stock: [] };
+  learner.clearPriors?.();          // audit: seed() now pools across assets; start from clean priors
   for (const asset of cfg.ASSETS) {
     try {
       // Technical + regime only (ML has its own purged walk-forward inside ml.signals); regime
       // re-detected every 5 bars to keep this to seconds per asset. Runs in a worker thread.
       const res = await runInWorker({ asset, horizon, opts: { useML: false, regimeEvery: 5 } });
       db.saveBacktest(asset.id, horizon, { ...res, assetId: asset.id, horizon, warm: true, ts: new Date().toISOString() });
-      pairs[asset.assetClass].push(...(res.calibrationPairs || []));
+      pairs[asset.assetClass].push(...(res.calibrationPairs || []).map(p => ({ ...p, a: asset.id })));
       learner.seed(res.signalStats || {});
       log(`[warm] ${asset.symbol} ${horizon}: ${res.metrics?.nTrades ?? 0} trades, hit ${(100 * (res.metrics?.hitRate || 0)).toFixed(1)}%, pairs ${res.calibrationPairs?.length || 0}`);
     } catch (e) { log(`[warm] ${asset.symbol}: ${e.message}`); }

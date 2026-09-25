@@ -54,7 +54,7 @@ const PARAMS = Object.freeze({
   HORIZON_MISMATCH: 0.6,
 });
 const BRACKETS = Object.freeze({ intraday: { stop: 2, target: 3 }, swing: { stop: 2, target: 3 }, position: { stop: 3.5, target: 5.5 } });
-const FAMILIES = ["technical", "regime", "fundamental", "sentiment", "macro", "microstructure", "ml", "llm", "derivatives"];
+const FAMILIES = ["technical", "regime", "fundamental", "sentiment", "macro", "microstructure", "ml", "llm", "derivatives", "relative"];
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const fin = (v, d = 0) => (Number.isFinite(v) ? v : d);
@@ -65,9 +65,9 @@ const round = (x, d) => { const m = 10 ** d; return Math.round(fin(x) * m) / m; 
 // Base family weights β by horizon (RESEARCH §5.1). `fundamental` is the stock value; crypto uses
 // CRYPTO_FUNDAMENTAL. ML is not boosted: its own signal confidence (OOS-AUC based) scales it.
 const DEFAULT_FAMILY_WEIGHTS = Object.freeze({
-  intraday: { technical: 1, ml: 0.6, regime: 0.3, derivatives: 0.3, microstructure: 0.7, sentiment: 0.3,  macro: 0.1, fundamental: 0,    llm: 0.2 },
-  swing:    { technical: 1, ml: 0.7, regime: 0.4, derivatives: 0.5, microstructure: 0.1, sentiment: 0.3,  macro: 0.3, fundamental: 0.15, llm: 0.3 },
-  position: { technical: 1, ml: 0.5, regime: 0.5, derivatives: 0.5, microstructure: 0,   sentiment: 0.15, macro: 0.5, fundamental: 0.4,  llm: 0.2 },
+  intraday: { technical: 1, ml: 0.6, regime: 0.3, derivatives: 0.3, microstructure: 0.7, sentiment: 0.3,  macro: 0.1, fundamental: 0,    llm: 0.2, relative: 0.2 },
+  swing:    { technical: 1, ml: 0.7, regime: 0.4, derivatives: 0.5, microstructure: 0.1, sentiment: 0.3,  macro: 0.3, fundamental: 0.15, llm: 0.3, relative: 0.5 },
+  position: { technical: 1, ml: 0.5, regime: 0.5, derivatives: 0.5, microstructure: 0,   sentiment: 0.15, macro: 0.5, fundamental: 0.4,  llm: 0.2, relative: 0.6 },
 });
 const CRYPTO_FUNDAMENTAL = Object.freeze({ intraday: 0, swing: 0.1, position: 0.25 });
 
@@ -95,6 +95,7 @@ function familyWeights(regime, horizon, assetClass) {
 function subfamily(id) {
   const t = String(id || "").split(".");
   if (t.length >= 3 && /^\d+(m|h|d|w)$/i.test(t[1])) return t[2];
+  if (t[0] === "tech" && t[1] === "mtf") return "trend";   // audit: alignment re-aggregates the per-tf trend views
   return t[1] || "_";
 }
 const TREND_SUBS = new Set(["trend", "mtf"]);
@@ -217,11 +218,15 @@ function calibInfo(calibrator) {
   let rel = null;
   try { rel = typeof calibrator.reliability === "function" ? calibrator.reliability() : null; } catch { rel = null; }
   const reliable = rel ? rel.reliable !== false && !(Number(rel.n) < 30) : typeof calibrator === "function";
-  const ece = rel && Number.isFinite(rel.ece) ? rel.ece : null;
+  // Audit: prefer the calibrator's honest out-of-fold numbers — in-sample isotonic ECE is ~0 by
+  // construction, which pinned K and the Kelly reliability near 1 even for a no-skill calibrator.
+  const oof = rel && rel.oof && typeof rel.oof === "object" ? rel.oof : null;
+  const ece = oof && Number.isFinite(oof.ece) ? oof.ece : rel && Number.isFinite(rel.ece) ? rel.ece : null;
+  const bss = oof && Number.isFinite(oof.bss) ? oof.bss : null;
   return {
-    apply, reliable, ece,
+    apply, reliable, ece, bss,
     K: reliable ? clamp(1 - 1.5 * fin(ece, 0.05), 0.75, 1) : PARAMS.UNCAL_RELIABILITY,
-    kelly: reliable ? clamp(1 - 4 * fin(ece, 0.05), 0.25, 1) : PARAMS.UNCAL_KELLY_RELIABILITY,
+    kelly: reliable ? clamp(Math.min(1 - 4 * fin(ece, 0.05), bss != null ? 0.25 + 50 * Math.max(0, bss) : 1), 0.25, 1) : PARAMS.UNCAL_KELLY_RELIABILITY,
   };
 }
 
@@ -338,9 +343,11 @@ function decide(input = {}, opts = {}) {
   const present = Object.keys(fam).filter(f => fam[f].omega > 0);
   const sumOmega = present.reduce((s, f) => s + fam[f].omega, 0);
   const expected = new Set((Array.isArray(a.expectedFamilies) ? a.expectedFamilies
-    : Object.keys(beta).filter(f => f !== "llm" && f !== "other")).filter(f => fin(beta[f]) > 0));
+    : Object.keys(beta).filter(f => f !== "llm" && f !== "other" && f !== "relative")).filter(f => fin(beta[f]) > 0));
   for (const f of present) expected.add(f);
-  const bPresent = present.reduce((s, f) => s + fam[f].beta, 0);
+  // Audit: a family that REPORTED but abstains (e.g. ML with OOS-AUC confidence 0) is not missing
+  // data; counting it as missing inflated every other family's evidence by ~12% (renorm √(3.4/2.7)).
+  const bPresent = Object.keys(fam).reduce((s, f) => s + (fam[f].n > 0 ? fam[f].beta : 0), 0);
   const bExpected = [...expected].reduce((s, f) => s + fin(beta[f]), 0);
   const renorm = bPresent > 0 ? Math.min(PARAMS.RENORM_MAX, Math.sqrt(Math.max(1, bExpected / bPresent))) : 1;
   const scale = PARAMS.POOL_EXP * renorm;           // extreme vol already halves every β_f
@@ -361,9 +368,23 @@ function decide(input = {}, opts = {}) {
   // ---- calibration ----
   const cal = calibInfo(a.calibrator);
   let pUp = 0.5 + PARAMS.UNCAL_SHRINK * (pRaw - 0.5);
+  // Audit: calibrate the statistic the calibrator was FITTED on. Warm-start pairs come from
+  // backtest.run (base-tf technical + regime, expectedFamilies [technical, regime], no learned
+  // weights, no mask); live pRaw adds 15m/1h signals, ML, derivatives, sentiment, macro,
+  // fundamentals, learned weights and a renormalisation for silent families (mean |ΔL| 0.083 crypto /
+  // 0.045 stocks vs a training sd of ≈0.15). The engine passes the backtest-equivalent pooled value as
+  // a.calibration = { pRaw, logOdds, extraShrink }; the calibrated probability is then moved by the
+  // remaining, un-backtested evidence, shrunk and capped:
+  //   logit(pUp) = logit(cal(pRaw_cal)) + λ·clamp(L − L_cal, ±EXTRA_CAP),  λ = extraShrink (0.5).
+  const calIn = a.calibration && Number.isFinite(Number(a.calibration.pRaw)) ? a.calibration : null;
   if (!noEvidence && cal.apply) {
     let pc = NaN;
-    try { pc = Number(cal.apply(pRaw)); } catch { pc = NaN; }
+    try { pc = Number(cal.apply(calIn ? Number(calIn.pRaw) : pRaw)); } catch { pc = NaN; }
+    if (Number.isFinite(pc) && calIn && Number.isFinite(Number(calIn.logOdds))) {
+      const lam = clamp(fin(Number(calIn.extraShrink), 0.5), 0, 1);
+      const extra = clamp(L - Number(calIn.logOdds), -0.4, 0.4);
+      pc = sigmoid(logit(clamp(pc, 1e-6, 1 - 1e-6)) + lam * extra);
+    }
     if (Number.isFinite(pc)) pUp = pc;
   }
   // Learned-model override (v2): when the self-improvement loop has promoted a stacked model, it
@@ -490,7 +511,8 @@ function decide(input = {}, opts = {}) {
     assetId: asset.id || null, symbol: asset.symbol || a.symbol || "?", assetClass: cls === "etf" ? "stock" : cls,
     ts: new Date(fin(nowMs, Date.now())).toISOString(), horizon, horizonLabel: hz.label || horizon,
     price: Number.isFinite(price) ? price : null,
-    action, pUp: round(pUp, 4), pRaw: round(pRaw, 4), confidence: round(confidence, 4), agreement: round(agreement, 4),
+    action, pUp: round(pUp, 4), pRaw: round(pRaw, 4), pRawCal: calIn ? round(Number(calIn.pRaw), 4) : null,
+    confidence: round(confidence, 4), agreement: round(agreement, 4),
     coverage: round(coverage, 4), edge: round(edge, 4), baseRate: round(baseRate, 4), edgeVsBase: round(edgeVsBase, 4), expectedReturn: round(expectedReturn, 5),
     risk: riskPlan, sellIntent, calibrated: cal.reliable,
     regime: regime ? { label: regime.label || regimeText(regime), trend: regime.trend || null, vol: regime.vol || null,
