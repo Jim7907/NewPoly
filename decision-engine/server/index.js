@@ -206,7 +206,7 @@ async function main() {
   // Warm start once per horizon (walk-forward backtests → calibrator + prior weights).
   const h = engine.currentHorizon();
   if (!db.getSetting(`warm_${h}`) && process.env.WARM_START !== "false") {
-    setTimeout(() => engine.warmStart({ horizon: h }).then(r => console.log(`[warm] calibrator fitted on ${r.pairs} OOS pairs`))
+    setTimeout(() => engine.warmStart({ horizon: h }).then(r => console.log(`[warm] calibrators: crypto ${r.crypto.pairs} pairs (base ${(r.crypto.baseRate ?? 0).toFixed(3)}), stock ${r.stock.pairs} pairs (base ${(r.stock.baseRate ?? 0).toFixed(3)})`))
       .catch(e => console.error("[warm]", e.message)), 20_000);
   }
 

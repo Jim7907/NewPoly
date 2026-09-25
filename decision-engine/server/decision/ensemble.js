@@ -367,8 +367,15 @@ function decide(input = {}, opts = {}) {
     if (Number.isFinite(pc)) pUp = pc;
   }
   pUp = noEvidence ? 0.5 : clamp(pUp, 0.001, 0.999);
-  const edge = Math.abs(pUp - 0.5);
   const side = pUp > 0.5 ? 1 : pUp < 0.5 ? -1 : (L >= 0 ? 1 : -1);
+  // Informational edge. A calibrator fitted on a period where the asset class mostly rose learns
+  // that drift (e.g. 56% of weeks up) and would call everything a BUY. The edge that gates and
+  // scores a call is therefore the smaller of |pUp − 0.5| (is the bet +EV at all?) and the
+  // distance from the class base rate on the traded side (do the signals add anything beyond
+  // drift?). Without a base rate (no calibrator) this is plain |pUp − 0.5|.
+  const baseRate = cal.apply && Number.isFinite(Number(a.baseRate)) ? clamp(Number(a.baseRate), 0.3, 0.7) : 0.5;
+  const edgeVsBase = side > 0 ? pUp - baseRate : baseRate - pUp;
+  const edge = Math.max(0, Math.min(Math.abs(pUp - 0.5), edgeVsBase));
 
   // ---- agreement, coverage, conflicts ----
   let pro = 0, tot = 0;
@@ -471,7 +478,7 @@ function decide(input = {}, opts = {}) {
     ts: new Date(fin(nowMs, Date.now())).toISOString(), horizon, horizonLabel: hz.label || horizon,
     price: Number.isFinite(price) ? price : null,
     action, pUp: round(pUp, 4), pRaw: round(pRaw, 4), confidence: round(confidence, 4), agreement: round(agreement, 4),
-    coverage: round(coverage, 4), edge: round(edge, 4), expectedReturn: round(expectedReturn, 5),
+    coverage: round(coverage, 4), edge: round(edge, 4), baseRate: round(baseRate, 4), edgeVsBase: round(edgeVsBase, 4), expectedReturn: round(expectedReturn, 5),
     risk: riskPlan, sellIntent, calibrated: cal.reliable,
     regime: regime ? { label: regime.label || regimeText(regime), trend: regime.trend || null, vol: regime.vol || null,
       hmmState: regime.hmm ? (regime.hmm.state ?? null) : null } : null,

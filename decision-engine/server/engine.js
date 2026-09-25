@@ -27,28 +27,33 @@ const analyst = require("./llm/analyst");
 const portfolio = require("./portfolio");
 
 // ── Learned state ──
-const calibrators = {};               // horizon -> Calibrator
+const calibrators = {};               // `${horizon}|${assetClass}` -> Calibrator (+ .baseRate)
 let learner = new WeightLearner();
-const MAX_PAIRS = 6000;
+const MAX_PAIRS = 20000;
+const CLASSES = ["crypto", "stock"];
+const ckey = (h, cls) => `${h}|${cls}`;
 
 function loadState() {
   const w = db.loadModel("weights");
   if (w) learner = WeightLearner.fromJSON(w);
-  for (const h of Object.keys(cfg.HORIZONS)) {
-    const c = db.loadModel(`calib:${h}`);
-    calibrators[h] = c ? Calibrator.fromJSON(c) : null;
+  for (const h of Object.keys(cfg.HORIZONS)) for (const cls of CLASSES) {
+    const c = db.loadModel(`calib:${ckey(h, cls)}`);
+    if (c) { calibrators[ckey(h, cls)] = Calibrator.fromJSON(c.model); calibrators[ckey(h, cls)].baseRate = c.baseRate; }
   }
 }
 
-function refitCalibrator(horizon, newPairs = []) {
-  const key = `pairs:${horizon}`;
+// One calibrator per (horizon, asset class): crypto and equities have different base rates and
+// score distributions. Pairs are kept per class (most recent MAX_PAIRS).
+function refitCalibrator(horizon, cls, newPairs = []) {
+  const key = `pairs:${ckey(horizon, cls)}`;
   const pairs = (db.loadModel(key) || []).concat(newPairs).slice(-MAX_PAIRS);
   db.saveModel(key, pairs);
   if (pairs.length < 30) return null;
   const c = new Calibrator();
   c.fit(pairs, { ahead: H(horizon).ahead });
-  calibrators[horizon] = c;
-  db.saveModel(`calib:${horizon}`, c.toJSON());
+  c.baseRate = pairs.reduce((s, p) => s + p.y, 0) / pairs.length;
+  calibrators[ckey(horizon, cls)] = c;
+  db.saveModel(`calib:${ckey(horizon, cls)}`, { model: c.toJSON(), baseRate: c.baseRate });
   return c;
 }
 
@@ -127,7 +132,8 @@ async function evaluate(asset, { horizon = currentHorizon(), withLLM = true, for
 
   const decision = ensemble.decide({
     asset, signals, regime, horizon, price, atr, candles,
-    weights: learner, calibrator: calibrators[horizon] || null, now: Date.now(),
+    weights: learner, calibrator: calibrators[ckey(horizon, asset.assetClass)] || null,
+    baseRate: calibrators[ckey(horizon, asset.assetClass)]?.baseRate, now: Date.now(),
     thresholds: thresholds(), dataQuality: g.dataQuality,
     equity: portfolio.equity(), openPositions: db.openPositions(),
   });
@@ -167,32 +173,36 @@ async function resolveDue(nowMs = Date.now()) {
     const y = r > 0 ? 1 : 0;
     db.resolveDecision(d.id, px, r, y);
     learner.update(d.votes || [], y, { scale: 1 / H(d.horizon).ahead });
-    (byHorizon[d.horizon] ||= []).push({ p: d.pRaw, y });
+    (byHorizon[ckey(d.horizon, d.assetClass)] ||= []).push({ p: d.pRaw, y });
   }
   db.saveModel("weights", learner.toJSON());
-  for (const [h, pairs] of Object.entries(byHorizon)) refitCalibrator(h, pairs);
+  for (const [k, pairs] of Object.entries(byHorizon)) { const [h, cls] = k.split("|"); refitCalibrator(h, cls, pairs); }
   return due.length;
 }
 
 // ── Warm start from walk-forward backtests ──
 async function warmStart({ horizon = currentHorizon(), log = console.log } = {}) {
   const { runInWorker } = require("./learning/worker");
-  const pairs = [];
+  const pairs = { crypto: [], stock: [] };
   for (const asset of cfg.ASSETS) {
     try {
       // Technical + regime only (ML has its own purged walk-forward inside ml.signals); regime
       // re-detected every 5 bars to keep this to seconds per asset. Runs in a worker thread.
       const res = await runInWorker({ asset, horizon, opts: { useML: false, regimeEvery: 5 } });
       db.saveBacktest(asset.id, horizon, { ...res, assetId: asset.id, horizon, warm: true, ts: new Date().toISOString() });
-      pairs.push(...(res.calibrationPairs || []));
+      pairs[asset.assetClass].push(...(res.calibrationPairs || []));
       learner.seed(res.signalStats || {});
       log(`[warm] ${asset.symbol} ${horizon}: ${res.metrics?.nTrades ?? 0} trades, hit ${(100 * (res.metrics?.hitRate || 0)).toFixed(1)}%, pairs ${res.calibrationPairs?.length || 0}`);
     } catch (e) { log(`[warm] ${asset.symbol}: ${e.message}`); }
   }
   db.saveModel("weights", learner.toJSON());
-  const c = refitCalibrator(horizon, pairs);
+  const out = {};
+  for (const cls of CLASSES) {
+    const c = refitCalibrator(horizon, cls, pairs[cls]);
+    out[cls] = { pairs: pairs[cls].length, baseRate: c?.baseRate, reliability: c?.reliability?.() || null };
+  }
   db.setSetting(`warm_${horizon}`, new Date().toISOString());
-  return { pairs: pairs.length, reliability: c?.reliability?.() || null };
+  return out;
 }
 
 const perfReport = () => {
@@ -218,7 +228,9 @@ const perfReport = () => {
   try { calibration = pairs.length ? Calibrator.reliabilityOf(pairs) : null; } catch { /* ignore */ }
   return {
     horizon: h, nResolved: res.length, calibration,
-    calibrator: calibrators[h]?.reliability?.() || null,
+    calibrator: calibrators[ckey(h, "crypto")]?.reliability?.() || calibrators[ckey(h, "stock")]?.reliability?.() || null,
+    calibrators: Object.fromEntries(CLASSES.map(cls => [cls, calibrators[ckey(h, cls)]
+      ? { ...calibrators[ckey(h, cls)].reliability(), baseRate: calibrators[ckey(h, cls)].baseRate } : null])),
     weights: learner.report(), byAction, byFamily,
   };
 };

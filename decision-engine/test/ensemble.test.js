@@ -287,3 +287,18 @@ test("an open long paper position on the asset turns SELL into an exit", () => {
   assert.strictEqual(d.sellIntent, "exit");
   assert.strictEqual(d.risk.direction, null);
 });
+
+test("base-rate guard: a calibrator that only learned drift does not create BUYs", () => {
+  const drift = { apply: () => 0.57, reliability: () => ({ reliable: true, n: 5000, ece: 0.01 }) };
+  const sigs = [
+    { id: "tech.trend.ema_stack", family: "technical", score: 0.2, confidence: 0.6, reason: "x" },
+    { id: "regime.trend.state", family: "regime", score: 0.1, confidence: 0.5, reason: "x" },
+  ];
+  const base = { asset: { id: "STOCK:X", symbol: "X", assetClass: "stock" }, signals: sigs, horizon: "swing", price: 100, atr: 2, calibrator: drift };
+  const d = E.decide({ ...base, baseRate: 0.56 });
+  assert.equal(d.action, "HOLD");
+  assert.ok(d.edge <= 0.011, `edge ${d.edge}`);
+  assert.match(d.abstainReason, /edge/);
+  const d2 = E.decide({ ...base, baseRate: 0.50 });
+  assert.ok(d2.edge > 0.06);
+});
