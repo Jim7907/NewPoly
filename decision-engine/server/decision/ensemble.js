@@ -352,6 +352,9 @@ function decide(input = {}, opts = {}) {
     for (const x of F.items) x.contribution = fin(F.mass > 0 ? scale * capRatio * F.omega * (x.d * x.w * x.e) / F.mass : 0);
     F.logodds = scale * capRatio * F.omega * F.ebar;
   }
+  // Every signal carries its signed pooled log-odds contribution (Σ contributions = L) and its
+  // de-duplication factor, for the UI's signal table.
+  for (const x of items) { x.s.contribution = round(x.contribution, 5); x.s.dedupFactor = round(x.d, 4); }
   const noEvidence = present.length === 0 || !(sumOmega > 0);
   const pRaw = noEvidence ? 0.5 : sigmoid(L);
 

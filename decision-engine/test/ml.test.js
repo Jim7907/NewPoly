@@ -96,8 +96,7 @@ test("GBMClassifier learns an interaction (AND), is deterministic, round-trips J
 test("defaults depend on bar spacing (research §5.1)", () => {
   const d = ml.resolveOpts(gen(100, 1), { ahead: 5 });
   assert.deepStrictEqual([d.minTrain, d.step, d.deadZone], [500, 20, 0.15]);
-  const intra = gen(100, 1).map((k, i) => ({ ...k, t: k.t / 96 + i * 0 }));
-  for (let i = 0; i < intra.length; i++) intra[i].t = Date.UTC(2024, 0, 1) + i * 900000;
+  const intra = gen(100, 1).map((k, i) => ({ ...k, t: Date.UTC(2024, 0, 1) + i * 900000 })); // 15m bars
   const m = ml.resolveOpts(intra, { ahead: 8, costBps: 10 });
   assert.deepStrictEqual([m.minTrain, m.step, m.deadZone, m.minAbsRet], [3000, 96, 0.2, 0.002]);
 });
