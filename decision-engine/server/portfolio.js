@@ -9,6 +9,7 @@
 // MAX_DRAWDOWN below its peak (circuit breaker), and stocks only trade in regular hours.
 const cfg = require("./config");
 const db = require("./db");
+const { horizonEndMs } = require("./data/stocks");
 
 const lastPrice = new Map();                 // assetId -> latest mark
 const costBps = (assetClass) => (assetClass === "crypto" ? cfg.FEE_BPS_CRYPTO : cfg.FEE_BPS_STOCK) + cfg.SLIPPAGE_BPS;
@@ -57,7 +58,9 @@ function open(decision, { marketOpen = true } = {}) {
   const id = db.insertPosition({
     assetId: decision.assetId, symbol: decision.symbol, assetClass: decision.assetClass,
     direction: r.direction, qty, entry, stop: r.stop, target: r.target,
-    expiresAt: Date.now() + H.ahead * H.tf * 1000, costUsd: sizeUsd, decisionId: decision.decisionId,
+    // Holding period in the asset's own trading time (audit fix: stocks used calendar time, so a
+    // 5-bar swing position expired after 3.0–4.8 trading days instead of the backtested 5).
+    expiresAt: horizonEndMs(decision.assetClass, Date.now(), H.ahead, H.tf), costUsd: sizeUsd, decisionId: decision.decisionId,
     pUp: decision.pUp, confidence: decision.confidence, fees,
   });
   return { id, symbol: decision.symbol, direction: r.direction, qty, entry, sizeUsd, stop: r.stop, target: r.target };

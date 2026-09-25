@@ -239,3 +239,52 @@ test("performance: analyze() on 600 candles is fast", () => {
   const ms = (performance.now() - t0) / reps;
   assert.ok(ms < 40, `analyze took ${ms.toFixed(1)} ms`);
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: multiTimeframe tags sub-daily signals 'intraday' for daily-based horizons", () => {
+  const d1 = fromCloses(trendPath(300, 0.004, 0.01, 1));
+  const h1 = fromCloses(trendPath(300, 0.001, 0.004, 2), { dt: 3600000 });
+  const m15 = fromCloses(trendPath(300, 0.0005, 0.002, 3), { dt: 900000 });
+  const swing = T.multiTimeframe({ "1d": d1, "1h": h1, "15m": m15 }, { horizon: "swing" });
+  const byTf = (tf) => swing.filter((s) => s.id.startsWith(`tech.${tf}.`));
+  assert.ok(byTf("1d").every((s) => s.horizon === "swing"));
+  assert.ok(byTf("1h").every((s) => s.horizon === "intraday") && byTf("15m").every((s) => s.horizon === "intraday"));
+  // lookbacks are unchanged: only the tag differs from a plain analyze() of the same series
+  const plain = T.analyze(h1, { horizon: "swing" });
+  for (const s of plain) {
+    const m = swing.find((x) => x.id === `tech.1h.${s.id.slice(5)}`);
+    assert.ok(m && m.score === s.score && m.confidence === s.confidence, s.id);
+  }
+  // intraday requests keep "intraday" everywhere; position keeps "position" on daily bars
+  const intra = T.multiTimeframe({ "1d": d1, "15m": m15 }, { horizon: "intraday" });
+  assert.ok(intra.filter((s) => s.id !== "tech.mtf.alignment").every((s) => s.horizon === "intraday"));
+  assert.strictEqual(T.horizonForTf("1d", "position"), "position");
+  assert.strictEqual(T.horizonForTf("4h", "swing"), "intraday");
+});
+
+test("audit: a still-forming last bar gets its volume pro-rated (volume signals no longer read a fake collapse)", () => {
+  const I = require("../server/analysis/indicators");
+  const DAY = 86400000;
+  const cs = fromCloses(trendPath(300, 0.002, 0.01, 5)).map((c, i) => ({ ...c, t: i * DAY, v: 1000 }));
+  const now = cs.at(-1).t + 0.25 * DAY;                         // 25% into the last (forming) bar
+  const partial = cs.map((c, i) => (i === cs.length - 1 ? { ...c, v: 250 } : c));
+  const proj = I.projectFormingVolume(partial, { now });
+  assert.strictEqual(proj.at(-1).v, 1000);
+  assert.strictEqual(proj.at(-1).vRaw, 250);
+  assert.strictEqual(partial.at(-1).v, 250, "input is not mutated");
+  // completed histories (backtests) are returned unchanged
+  assert.strictEqual(I.projectFormingVolume(partial, { now: cs.at(-1).t + 2 * DAY }), partial);
+  // a partial bar analysed "live" matches the complete-bar volume signals
+  const live = T.analyze(partial, { horizon: "swing", now });
+  const full = T.analyze(cs, { horizon: "swing", now: cs.at(-1).t + 5 * DAY });
+  const pick = (a, id) => a.find((s) => s.id === id);
+  for (const id of ["tech.volume.obv", "tech.volume.mfi"]) assert.deepStrictEqual(pick(live, id).score, pick(full, id).score, id);
+});
+
+test("audit: the 52-week extremes window is 365 daily bars for crypto, 252 sessions for stocks", () => {
+  const cs = fromCloses(trendPath(500, 0.001, 0.01, 9));
+  const ex = (cls) => T.analyze(cs, { horizon: "swing", assetClass: cls }).find((s) => s.id === "tech.structure.extremes");
+  assert.strictEqual(ex("crypto").value.bars, 365);
+  assert.strictEqual(ex("stock").value.bars, 252);
+  assert.match(ex("crypto").reason, /52-week/);
+});

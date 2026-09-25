@@ -151,3 +151,14 @@ test("signals(regime): well-formed and directionally sensible", () => {
   assert.ok(n.every((s) => Math.abs(s.score) < 0.01));
   assert.deepStrictEqual(R.signals(null), []);
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: regime.trend.state is context only (confidence 0) — its evidence duplicates the technical trend signals", () => {
+  const rnd = mulberry32(8);
+  const up = R.detect(toCandles(Array.from({ length: 400 }, () => 0.004 + 0.008 * gauss(rnd))));
+  const s = R.signals(up).find((x) => x.id === "regime.trend.state");
+  assert.ok(s.score > 0.3, "direction still reported for the UI");
+  assert.strictEqual(s.confidence, 0, "but it carries no weight in pooling");
+  // the other regime signals still carry weight
+  assert.ok(R.signals(up).some((x) => x.id !== "regime.trend.state" && x.confidence > 0));
+});

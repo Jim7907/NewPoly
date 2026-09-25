@@ -162,16 +162,21 @@ function altmanScore(a) {
 // ---------------------------------------------------------------------------------------------
 // Stock signals
 // ---------------------------------------------------------------------------------------------
-function staleMultiplier(asOf, now) {
+// Age of the fundamentals = age of the latest reported FISCAL PERIOD (f.periodEnd), not the time
+// the data was fetched. AUDIT (2026-09): this used f.asOf, which the data layer stamps with the
+// fetch time (new Date()), so staleness was always 0 days and a company that stopped filing years
+// ago scored with full confidence. Quarterly cadence = 91 days + ≤ 45 days filing lag, so the data
+// is "fresh" for 135 days after the period end, then fades toward 0.5 by ~1 year later.
+function staleMultiplier(asOf, now, graceDays = 120) {
   if (!asOf) return 1;
   const t = typeof asOf === "number" ? asOf : Date.parse(asOf);
   const n = isNum(now) ? now : Date.now();
   if (!isNum(t)) return 1;
   const days = (n - t) / 86400000;
-  // Quarterly filings: fine for ~4 months, then fade toward 0.5 by ~1 year.
-  if (days <= 120) return 1;
-  return clamp(1 - 0.5 * (days - 120) / 245, 0.5, 1);
+  if (days <= graceDays) return 1;
+  return clamp(1 - 0.5 * (days - graceDays) / 245, 0.5, 1);
 }
+const fundamentalsAge = (f, now) => (f.periodEnd ? staleMultiplier(f.periodEnd, now, 135) : staleMultiplier(f.asOf, now));
 
 function analystSignal(f, price, o) {
   if (!allNum(f.analystTarget, price) || price <= 0 || f.analystTarget <= 0) return null;
@@ -186,7 +191,7 @@ function analystSignal(f, price, o) {
 function stockSignals(f, opts = {}) {
   if (!f || typeof f !== "object") return [];
   const out = [];
-  const o = { horizon: opts.horizon, staleMult: staleMultiplier(f.asOf, opts.now) };
+  const o = { horizon: opts.horizon, staleMult: fundamentalsAge(f, opts.now) };
   const push = (s) => { if (s) out.push(s); };
   const price = isNum(f.price) ? f.price : null;
   const mcap = isNum(f.marketCap) && f.marketCap > 0 ? f.marketCap

@@ -96,3 +96,63 @@ test("serialization round-trip", () => {
   assert.strictEqual(junk.get("q"), 2);
   assert.strictEqual(WeightLearner.fromJSON(null).get("q"), 1);
 });
+
+// ── Audit regressions (2026-09) ──
+function lcg(seed) { let s = seed >>> 0; return () => ((s = (1664525 * s + 1013904223) >>> 0) / 4294967296); }
+
+test("audit: with baseRate, no-skill always-bull / always-bear signals stay near 1 (drift is not skill)", () => {
+  const run = (baseRate) => {
+    const L = new WeightLearner(), r = lcg(7);
+    for (let t = 0; t < 3000; t++) {
+      const y = r() < 0.57 ? 1 : 0;                       // stock-like weekly up-rate, independent of votes
+      L.update([sig("bull", 0.6, 0.6), sig("bear", -0.6, 0.6)], y, { scale: 1 / 5, baseRate });
+    }
+    return [L.get("bull"), L.get("bear")];
+  };
+  const [bull0, bear0] = run(undefined);                   // legacy (b = 0.5): drift leaks into weights
+  assert.ok(bull0 > 1.5 && bear0 < 0.8, `legacy ${bull0} ${bear0}`);
+  const [bull, bear] = run(0.57);
+  assert.ok(Math.abs(bull - 1) < 0.15 && Math.abs(bear - 1) < 0.15, `neutral ${bull} ${bear}`);
+  // b = 0.5 reproduces the old ±1 rule exactly
+  const A = new WeightLearner({ eta: 0.1, decay: 0 }), B = new WeightLearner({ eta: 0.1, decay: 0 });
+  A.update([sig("a", 0.8)], 1); B.update([sig("a", 0.8)], 1, { baseRate: 0.5 });
+  assert.strictEqual(A.get("a"), B.get("a"));
+});
+
+test("audit: seed() pools repeated calls instead of overwriting (warm start seeds per asset)", () => {
+  const L = new WeightLearner();
+  L.seed({ x: { n: 2000, hits: 1200 } });
+  L.seed({ x: { n: 200, hits: 90 } });
+  const h = (1290 + 25) / 2250;
+  close(L.get("x"), h / (1 - h), 1e-12);
+  assert.deepStrictEqual(L.report().x.prior, { n: 2200, hits: 1290, hitRate: +(1290 / 2200).toFixed(4) });
+});
+
+test("audit: seed() removes drift from hit rates and shrinks on n_eff = n/ahead", () => {
+  // no-skill votes: always-bull hits the 57% base rate, always-bear 43%
+  const L = new WeightLearner();
+  L.seed({ bull: { n: 1000, hits: 570, nLong: 1000, yUp: 570, ahead: 5 }, bear: { n: 1000, hits: 430, nLong: 0, yUp: 570, ahead: 5 } });
+  close(L.get("bull"), 1, 1e-9);
+  close(L.get("bear"), 1, 1e-9);
+  // a genuinely skilled balanced signal keeps its edge, but overlapping labels shrink it more
+  const S = new WeightLearner(), S1 = new WeightLearner();
+  S.seed({ s: { n: 1000, hits: 560, nLong: 500, yUp: 500, ahead: 5 } });
+  S1.seed({ s: { n: 1000, hits: 560, nLong: 500, yUp: 500, ahead: 1 } });
+  assert.ok(S.get("s") > 1 && S.get("s") < S1.get("s"), `${S.get("s")} vs ${S1.get("s")}`);
+  assert.strictEqual(S.report().s.prior.skillHitRate, 0.56);
+  // survives serialization
+  const R = WeightLearner.fromJSON(JSON.parse(JSON.stringify(S)));
+  assert.strictEqual(R.get("s"), S.get("s"));
+  R.seed({ s: { n: 1000, hits: 560, nLong: 500, yUp: 500, ahead: 5 } });
+  S.seed({ s: { n: 1000, hits: 560, nLong: 500, yUp: 500, ahead: 5 } });
+  assert.strictEqual(R.get("s"), S.get("s"));
+});
+
+test("audit: clearPriors() lets a fresh warm start re-seed without pooling stale backtests", () => {
+  const L = new WeightLearner();
+  L.seed({ x: { n: 1000, hits: 600 } });
+  assert.strictEqual(L.clearPriors(), 1);
+  L.seed({ x: { n: 1000, hits: 450 } });
+  const h = (450 + 25) / 1050;
+  close(L.get("x"), h / (1 - h), 1e-12);
+});

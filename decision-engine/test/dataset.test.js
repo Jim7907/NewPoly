@@ -297,3 +297,17 @@ test("worker threads give exactly the in-process result", async () => {
   assert.equal(two.meta.timing.workers, 2);
   assert.equal(canon(two.rows), canon(one.rows));
 });
+
+test("code fingerprint is stored and compared on update", async () => {
+  const U = universe(240);
+  const opts = { ...BASE, candlesByAsset: U.cb, macroHistory: U.macro, fearGreedHistory: U.fng, relative: null };
+  const ds = await D.buildDataset(opts);
+  assert.match(ds.meta.codeHash, /^[0-9a-f]{16}$/);
+  assert.equal(ds.meta.codeHash, D.codeHash());
+  await D.updateDataset(ds, { ...opts });
+  assert.equal(ds.meta.lastUpdate.codeChanged, false);
+  ds.meta.codeHash = "0000000000000000";
+  await D.updateDataset(ds, { ...opts });
+  assert.equal(ds.meta.lastUpdate.codeChanged, true);
+  assert.ok(ds.meta.notes.some((n) => /full rebuild/.test(n)));
+});

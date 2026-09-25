@@ -123,6 +123,10 @@ function expectedExitTime(sigma, S, T, H) {
 function positionSize({ pUp, riskReward, atrPct, annVol, equity, cfg = {}, openPositions = [], correlation,
   stopAtr, horizonBars = 5, costFrac = 0, periodsPerYear = 365, drawdown = 0, reliability = 1, assetClass } = {}) {
   const K = fin(cfg.KELLY_K, 0.25) * clamp(fin(reliability, 1), 0, 1);
+  // ETFs are equities: the ensemble passes "etf" while db position rows store "stock" (AUDIT 2026-09:
+  // SPY next to an open AAPL got the 0.2 cross-class correlation prior instead of the 0.5 equity one).
+  const eqClass = (c) => (c === "etf" ? "stock" : c);
+  assetClass = eqClass(assetClass);
   const maxPos = assetClass === "crypto" ? fin(cfg.MAX_POS_FRAC_CRYPTO, 0.05) : fin(cfg.MAX_POS_FRAC, 0.10);
   const maxGross = fin(cfg.MAX_GROSS, 1.0);
   const targetVol = fin(cfg.TARGET_VOL, 0.15), maxDD = fin(cfg.MAX_DRAWDOWN, 0.15);
@@ -159,7 +163,7 @@ function positionSize({ pUp, riskReward, atrPct, annVol, equity, cfg = {}, openP
     // explicit per-position correlation wins; otherwise a class prior (crypto↔crypto 0.7,
     // stock↔stock 0.5, cross-class 0.2) — crypto books are effectively one bet on BTC beta.
     const r = Number.isFinite(p.correlation) ? p.correlation
-      : assetClass && p.assetClass ? (p.assetClass === assetClass ? (assetClass === "crypto" ? 0.7 : 0.5) : 0.2) : null;
+      : assetClass && p.assetClass ? (eqClass(p.assetClass) === assetClass ? (assetClass === "crypto" ? 0.7 : 0.5) : 0.2) : null;
     if (r != null) rho = Math.max(rho ?? -1, r);
   }
   if (rho != null && rho > 0) { size *= 1 - 0.5 * clamp(rho, 0, 1); capped.push("correlation"); }

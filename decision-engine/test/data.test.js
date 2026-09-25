@@ -353,3 +353,38 @@ test("facade: asset resolution and timeframe plan", () => {
   assert.strictEqual(data.live("STOCK:AAPL"), null);
   assert.strictEqual(data.live("CRYPTO:BTC"), null);           // no stream started
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: stock horizons run in NYSE session time (5 daily bars = 5 sessions), crypto in calendar time", () => {
+  const H = 6.5 * 3600e3;
+  const fri11 = Date.UTC(2026, 8, 25, 15, 0);                        // Fri 25 Sep 2026 11:00 EDT
+  assert.strictEqual(stocks.horizonEndMs("stock", fri11, 5, 86400), Date.UTC(2026, 9, 2, 15, 0));   // next Fri 11:00
+  const sat = Date.UTC(2026, 8, 26, 15, 0);                          // Saturday → next Fri close
+  assert.strictEqual(stocks.horizonEndMs("stock", sat, 5, 86400), Date.UTC(2026, 9, 2, 20, 0));
+  const friAfter = Date.UTC(2026, 8, 25, 21, 0);                     // Fri 17:00 EDT (after close)
+  assert.strictEqual(stocks.horizonEndMs("stock", friAfter, 5, 86400), Date.UTC(2026, 9, 2, 20, 0));
+  // holidays are skipped: Thu 26 Nov 2026 (Thanksgiving)
+  const wed = Date.UTC(2026, 10, 25, 15, 0);                         // Wed 25 Nov 10:00 EST
+  assert.strictEqual(stocks.horizonEndMs("stock", wed, 1, 86400), Date.UTC(2026, 10, 27, 15, 0));
+  // intraday: 8 × 15m = 2 h of session time; 15:00 ET → 1 h today + 1 h next session
+  const late = Date.UTC(2026, 8, 24, 19, 0);                         // Thu 15:00 EDT
+  assert.strictEqual(stocks.horizonEndMs("stock", late, 8, 900), Date.UTC(2026, 8, 25, 14, 30));
+  // exactly 5 sessions of trading time between start and end
+  let mins = 0;
+  for (let t = fri11; t < stocks.horizonEndMs("stock", fri11, 5, 86400); t += 60000) if (stocks.marketOpen(t)) mins++;
+  assert.strictEqual(mins, 5 * 390);
+  assert.strictEqual(stocks.horizonEndMs("crypto", fri11, 5, 86400), fri11 + 5 * 86400e3);
+  assert.ok(H > 0);
+});
+
+test("audit: live Nasdaq intraday keeps only regular-session prints", () => {
+  const pre = { x: Date.UTC(2026, 8, 25, 9, 0), y: 10, w: 5 };       // 09:00 ET (pre-market)
+  const rth1 = { x: Date.UTC(2026, 8, 25, 9, 30), y: 11, w: 100 }, rth2 = { x: Date.UTC(2026, 8, 25, 15, 59), y: 12, w: 100 };
+  const post = { x: Date.UTC(2026, 8, 25, 16, 0), y: 13, w: 5 };
+  const json = { data: { chart: [pre, rth1, rth2, post] } };
+  const all = stocks.parseNasdaqIntraday(json, 3600);
+  const rth = stocks.parseNasdaqIntraday(json, 3600, { regularOnly: true });
+  assert.ok(all.length > rth.length);
+  assert.ok(rth.every((c) => stocks.marketOpen(c.t) || stocks.marketOpen(c.t + 1800e3)), JSON.stringify(rth));
+  assert.strictEqual(rth.reduce((s, c) => s + c.v, 0), 200);
+});

@@ -566,18 +566,29 @@ async function computeCycle(job) {
       const metaByKey = metaFor ? new Map((metaFor.oos || []).map((q) => [keyOf(q.t, q.assetId), q])) : null;
       for (const q of tunePrimary.trained.oos || []) {
         const r = rowByKey.get(keyOf(q.t, q.assetId));
-        const p = fin(q.pCal) ? q.pCal : q.p;
+        // Only sequentially-calibrated OOS predictions (pCal): the same scale Stacker.predict serves
+        // live. The first walk-forward fold has no calibrator yet and is skipped.
+        const p = q.pCal;
         if (!r || !r.lab || !fin(r.lab.tbLongRet) || !fin(r.lab.tbShortRet) || !fin(p)) continue;
         const row = { t: q.t, assetId: q.assetId, p, base, tbLongRet: r.lab.tbLongRet, tbShortRet: r.lab.tbShortRet };
         if (metaFor) { const m = metaByKey.get(keyOf(q.t, q.assetId)); row.metaP = m && fin(m.pMeta) ? m.pMeta : null; }
         tRows.push(row); fromOos++;
       }
     }
-    const tr = tuner.tuneThresholds(tRows, { ahead, ...(o.tune || {}) });
+    // With a meta-labeler, its OOS rows only exist where |p − base| ≥ its minEdge, so the edge grid
+    // starts there (an engine edge ≥ minEdge implies such a row) — train-OOS and holdout rows are
+    // then gated identically.
+    const metaMinEdge = metaFor && metaFor.model && fin(metaFor.model.minEdge) ? metaFor.model.minEdge : o.metaMinEdge;
+    const grid = metaFor && !(o.tune && o.tune.grid) ? { edges: tuner.DEFAULT_GRID.edges.filter((e) => e >= metaMinEdge - 1e-12), metaThresholds: tuner.DEFAULT_GRID.metaThresholds } : undefined;
+    const tr = tuner.tuneThresholds(tRows, { ahead, ...(grid ? { grid } : {}), ...(o.tune || {}) });
     const live = tunePrimary === effY;
-    const pass = tr.gate.pass && live;
     const reasons = tr.gate.reasons.slice();
     if (!live) reasons.push("no learned y-stacker will be live after this cycle (thresholds are defined on its probability)");
+    const champT = champions.thresholds;
+    if (tr.gate.pass && live && champT && tr.thresholds && JSON.stringify(champT.model) === JSON.stringify(tr.thresholds)) {
+      reasons.push(`unchanged: identical to champion v${champT.version} (no re-promotion)`);
+    }
+    const pass = reasons.length === 0;
     const reason = pass
       ? `promoted: PBO ${r6(tr.pbo.pbo)} ≤ ${RULES.pboMax}, deflated Sharpe ${r6(tr.dsr.dsr)} ≥ ${RULES.dsrMin}, nested OOS mean net return ${r6(tr.nested.meanRet)} over ${tr.nested.nActed} acted`
       : `rejected: ${reasons.join("; ")}`;
@@ -621,7 +632,8 @@ function horizonMs(horizon) {
   const hc = cfg.HORIZONS[horizon] || cfg.HORIZONS.swing;
   return hc.ahead * hc.tf * 1000 * (hc.tf >= 86400 ? 7 / 5 : 1);   // trading days → calendar
 }
-const safeLoad = (k) => { try { return getStore().loadModel(k); } catch { return null; } };
+const tryLoad = (k) => { try { return { ok: true, v: getStore().loadModel(k) }; } catch { return { ok: false, v: null }; } };   // ok:false = db not ready
+const safeLoad = (k) => tryLoad(k).v;
 const safeSave = (k, v) => { try { getStore().saveModel(k, v); return true; } catch (e) { console.error(`[selfImprove] save ${k}: ${e.message}`); return false; } };
 
 /** Dependency injection for tests / tools: { store, registry, horizon }. Resets in-memory state. */
@@ -634,17 +646,26 @@ function configure({ store, registry, horizon } = {}) {
 }
 
 // ── drift + live records ──
+// Persisted state is loaded lazily and cached only once the store answered (status() may be polled
+// before db.initDB(); a premature empty monitor must not shadow the persisted one).
 function driftBlob(h) {
   if (!state.monitors.has(h)) {
-    const raw = safeLoad(`drift:${h}`);
-    state.monitors.set(h, raw && raw.monitor ? DriftMonitor.fromJSON(raw.monitor) : new DriftMonitor());
+    const { ok, v: raw } = tryLoad(`drift:${h}`);
+    const m = raw && raw.monitor ? DriftMonitor.fromJSON(raw.monitor) : new DriftMonitor();
+    if (!ok) return m;
+    state.monitors.set(h, m);
     if (raw && raw.derisk && Date.parse(raw.derisk.until) > Date.now()) state.derisk.set(h, raw.derisk);
     if (raw && fin(raw.lastEarly)) state.lastEarly.set(h, raw.lastEarly);
   }
   return state.monitors.get(h);
 }
 function liveRecords(h) {
-  if (!state.live.has(h)) { const raw = safeLoad(`live:${h}`); state.live.set(h, raw && Array.isArray(raw.records) ? raw.records : []); }
+  if (!state.live.has(h)) {
+    const { ok, v: raw } = tryLoad(`live:${h}`);
+    const recs = raw && Array.isArray(raw.records) ? raw.records : [];
+    if (!ok) return recs;
+    state.live.set(h, recs);
+  }
   return state.live.get(h);
 }
 function markDirty(h) {

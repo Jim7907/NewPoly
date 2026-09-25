@@ -140,3 +140,12 @@ test("audit: Kelly uses the bracket variance, so it is ~2-3x the old two-outcome
   const oldKelly = 0.25 * br.eNet / (br.winFrac * br.lossFrac);
   assert.ok(r.kellyFrac > 2 * oldKelly && r.kellyFrac < 4 * oldKelly, `${r.kellyFrac} vs old ${oldKelly}`);
 });
+
+test("audit: ETFs share the equity correlation prior with stock positions (etf ≡ stock)", () => {
+  const args = { pUp: 0.6, riskReward: 1.5, atrPct: 0.02, annVol: 0.2, equity: 100000, cfg: CFG };
+  const base = R.positionSize({ ...args, assetClass: "stock" }).sizeFrac;
+  const etf = R.positionSize({ ...args, assetClass: "etf", openPositions: [{ assetClass: "stock", costUsd: 10000 }] });
+  assert.ok(close(etf.sizeFrac, base * 0.75), `${etf.sizeFrac} vs ${base * 0.75}`);
+  const rev = R.positionSize({ ...args, assetClass: "stock", openPositions: [{ assetClass: "etf", costUsd: 10000 }] });
+  assert.ok(close(rev.sizeFrac, base * 0.75));
+});

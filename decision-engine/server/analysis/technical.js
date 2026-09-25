@@ -100,7 +100,11 @@ function olsTail(y, n) {
 function analyze(candlesIn, opts = {}) {
   const horizon = opts.horizon || "any";
   if (!Array.isArray(candlesIn)) return [];
-  const candles = candlesIn.filter((c) => c && [c.o, c.h, c.l, c.c].every(isNum) && c.c > 0 && c.h >= c.l);
+  // A still-forming last bar gets its volume pro-rated to a full bar (see I.projectFormingVolume);
+  // completed histories (backtests) are unchanged. opts.now defaults to the wall clock.
+  const candles = I.projectFormingVolume(
+    candlesIn.filter((c) => c && [c.o, c.h, c.l, c.c].every(isNum) && c.c > 0 && c.h >= c.l),
+    { now: isNum(opts.now) ? opts.now : Date.now() });
   const N = candles.length;
   if (N < 60) return [];
 
@@ -492,7 +496,10 @@ function analyze(candlesIn, opts = {}) {
     }
   }
   {
-    const L = Math.min(N, Math.round((isDailyPlus ? 252 : 252 * barsPerDay)));
+    // One year of bars: 252 sessions for equities, 365 days for 24/7 crypto (AUDIT 2026-09: crypto
+    // used 252 daily bars — 36 weeks — while the reason text called it the 52-week high).
+    const yearDays = opts.assetClass === "crypto" ? 365 : 252;
+    const L = Math.min(N, Math.round((isDailyPlus ? yearDays : yearDays * barsPerDay)));
     let hi = -Infinity, lo = Infinity;
     for (let i = N - L; i < N; i++) { if (candles[i].h > hi) hi = candles[i].h; if (candles[i].l < lo) lo = candles[i].l; }
     if (hi > lo) {
@@ -502,7 +509,7 @@ function analyze(candlesIn, opts = {}) {
       // deep drawdowns are mildly negative (anchoring + overhead supply).
       const score = Math.tanh(2.5 * (pos - 0.5)) * 0.6;
       const conf = (0.2 + 0.2 * sat(Math.abs(pos - 0.5) * 2)) * (L >= 200 ? 1 : 0.6);
-      const lbl = isDailyPlus && L >= 250 ? "52-week" : `${L}-bar`;
+      const lbl = isDailyPlus && L >= yearDays - 2 ? "52-week" : `${L}-bar`;
       add("tech.structure.extremes", score, conf, horizon, { high: hi, low: lo, pos, fromHigh: fromHi, fromLow: fromLo, bars: L },
         `Price ${pct(-fromHi)} below the ${lbl} high ${px(hi)} and ${pct(fromLo)} above the low ${px(lo)} (${(pos * 100).toFixed(0)}% of range)`);
     }
@@ -581,11 +588,24 @@ function tfSeconds(tf) {
 const TREND_IDS = new Set(["trend.ema_stack", "trend.supertrend", "trend.adx_dmi", "trend.ichimoku",
   "trend.linreg", "trend.kalman", "momentum.macd", "momentum.tsmom", "momentum.roc"]);
 
+// Horizon a timeframe's own signals speak to. AUDIT (2026-09): every per-tf signal used to carry the
+// REQUESTED horizon, so 15m/1h indicators counted as full-strength evidence for a 5-day (swing) or
+// 20-day (position) call and supplied 30–60% of the live technical log-odds (BTC/ETH/SOL/AAPL/MSFT,
+// Sep 2026) — evidence no backtest ever validated. Sub-daily bars are now tagged "intraday" when the
+// requested horizon is daily-based, so the ensemble's horizon-mismatch discount (×0.6) applies;
+// the requested horizon is kept for daily+ bars, and for every tf when the request is intraday.
+function horizonForTf(tf, requested) {
+  const sec = tfSeconds(tf);
+  if (!requested || requested === "any" || requested === "intraday" || !isNum(sec)) return requested || "any";
+  return sec < 86400 ? "intraday" : requested;
+}
+
 /**
  * multiTimeframe({ "15m": candles, "1h": candles, "1d": candles }, opts) -> Signal[]
  * Runs analyze() per timeframe, re-ids each signal as tech.<tf>.<sub>.<name>, and adds one
  * tech.mtf.alignment signal: the confidence-weighted directional trend view per timeframe, combined
  * with higher timeframes weighted more (weight ∝ log(tfSeconds)); confidence reflects agreement.
+ * Per-tf signals carry horizonForTf(tf, opts.horizon) (sub-daily bars → "intraday" for swing/position).
  */
 function multiTimeframe(candlesByTf, opts = {}) {
   if (!candlesByTf || typeof candlesByTf !== "object") return [];
@@ -594,11 +614,12 @@ function multiTimeframe(candlesByTf, opts = {}) {
   const tfs = Object.keys(candlesByTf).sort((a, b) => safe(tfSeconds(a), 0) - safe(tfSeconds(b), 0));
   for (const tf of tfs) {
     const sigs = analyze(candlesByTf[tf], opts);
+    const tfH = horizonForTf(tf, horizon);          // only the tag changes; lookbacks follow opts.horizon
     if (!sigs.length) continue;
     let num = 0, den = 0;
     for (const s of sigs) {
       const sub = s.id.slice("tech.".length);
-      out.push({ ...s, id: `tech.${tf}.${sub}` });
+      out.push({ ...s, id: `tech.${tf}.${sub}`, horizon: s.horizon === horizon ? tfH : s.horizon });
       if (TREND_IDS.has(sub)) { num += s.score * s.confidence; den += s.confidence; }
     }
     const view = den > 0 ? num / den : 0;
@@ -623,4 +644,4 @@ function multiTimeframe(candlesByTf, opts = {}) {
   return out;
 }
 
-module.exports = { analyze, multiTimeframe, pivots, tfSeconds };
+module.exports = { analyze, multiTimeframe, pivots, tfSeconds, horizonForTf };

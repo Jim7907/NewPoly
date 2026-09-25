@@ -115,6 +115,14 @@ class WeightLearner {
     return count;
   }
 
+  /** Forget backtest priors (e.g. before a fresh warm start, so seed() does not pool the new
+   *  backtests with the previous ones). Live n/hits and the current w are kept. Returns #cleared. */
+  clearPriors() {
+    let k = 0;
+    for (const id in this.w) if (this.w[id].prior) { delete this.w[id].prior; k++; }
+    return k;
+  }
+
   /** { id: { w, n, hitRate, prior? } } */
   report() {
     const r = {};

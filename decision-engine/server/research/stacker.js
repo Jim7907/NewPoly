@@ -69,10 +69,13 @@
 //  ensemble : mean of the two probabilities (default).
 //
 // EVALUATION (all on the SAME OOS rows)
-//  auc / brier / logloss for the stacker, logistic, gbm, base rate and calibrated pRaw.
+//  auc / brier / logloss for the stacker, logistic, gbm, base rate and calibrated pRaw — plus
+//  classBase: the training fold's CLASS-conditional base rate (stock vs crypto) with its own DM
+//  test, so structure like "alts underperform BTC" is not mistaken for signal skill.
 //  dm = Diebold–Mariano on the per-row log-loss differential (stacker − calibrated pRaw) with a
 //       Driscoll–Kraay variance: per-row differentials are SUMMED BY DATE, then a Newey–West
-//       (Bartlett) long-run variance is taken over the date series with lag = ahead (in dates).
+//       (Bartlett) long-run variance is taken over the date series with lag = ahead (in dates;
+//       raised to the 90th pct of dates inside a label window when calendars differ — dmLag).
 //       Cross-sectional correlation (all assets fall together) is therefore absorbed inside a
 //       date, and label overlap across dates by the HAC lag. Harvey–Leybourne–Newbold small-sample
 //       factor, Student-t(T−1) p-values. stat < 0 ⇔ the stacker has LOWER log-loss.
@@ -87,7 +90,10 @@
 // FINAL MODEL: refit on all labelled rows; a Calibrator (server/learning/calibrator.js) is fitted
 // on the walk-forward OOS predictions and stored, so Stacker.predict(row) returns a CALIBRATED
 // probability (if the OOS history is too short for a reliable calibrator — n_eff < 30 — none is
-// stored, JSON calibrated: false, and predict returns the base-rate-centred model p). Calibrator sample size uses n_eff = nDates / ahead (dates, not rows, are the
+// stored, JSON calibrated: false, and predict returns the base-rate-centred model p).
+// Stacker.baseRate is the centre of predict()'s scale — the base rate of the OOS rows the
+// calibrator was fitted on (else of the training rows) — so pUp − baseRate is an unbiased edge;
+// trainBaseRate is the plain training base rate. Calibrator sample size uses n_eff = nDates / ahead (dates, not rows, are the
 // independent unit of a panel), which keeps it on Platt scaling until there is a lot of history.
 // Deterministic: fixed seeds, no Math.random.
 "use strict";
@@ -734,6 +740,23 @@ function lagInDates(ts, ahead, tf) {
 }
 
 /**
+ * Newey–West lag (in dates) for the DM / lift tests on panel predictions [{t, tEnd}]:
+ * max(lagInDates, 90th percentile over rows of the number of panel dates strictly inside the
+ * label window (t, tEnd)). In a mixed stock/crypto panel a 5-bar stock label spans ~7 calendar
+ * dates (crypto trades at weekends), so `ahead` alone would under-count the overlap.
+ */
+function dmLag(preds, ahead, tf) {
+  const base = lagInDates(preds.map(o => o.t), ahead, tf);
+  const dates = uniqSorted(preds.map(o => o.t));
+  const upper = x => { let lo = 0, hi = dates.length; while (lo < hi) { const m = (lo + hi) >> 1; if (dates[m] <= x) lo = m + 1; else hi = m; } return lo; };
+  const cnt = [];
+  for (const o of preds) if (isNum(o.tEnd) && o.tEnd > o.t) cnt.push(Math.max(0, upper(o.tEnd - 1) - upper(o.t)));
+  if (!cnt.length) return base;
+  cnt.sort((a, b) => a - b);
+  return Math.max(base, cnt[Math.floor(0.9 * (cnt.length - 1))]);
+}
+
+/**
  * Calibrator on panel pairs [{p, y, t}] with n_eff = nDates / ahead (passed to Calibrator as an
  * effective `ahead` = ahead · rows-per-date). Dates, not rows, are the independent unit.
  * NOTE: below n_eff 30 the Calibrator is "identity-shrink" (pulls toward 0.5, not toward the base
@@ -760,6 +783,7 @@ class Stacker {
     this.logistic = o.logistic || null;
     this.gbm = o.gbm || null;
     this.baseRate = Number.isFinite(o.baseRate) ? o.baseRate : 0.5;
+    this.trainBaseRate = Number.isFinite(o.trainBaseRate) ? o.trainBaseRate : this.baseRate;
     this.calibrator = o.calibrator || null;
     this.l2c = o.l2c != null ? o.l2c : null;
     this.nTrain = o.nTrain || 0;
@@ -791,7 +815,7 @@ class Stacker {
     return {
       v: 1, type: "stacker", target: this.target, kind: this.kind, spec: this.spec,
       logistic: this.logistic ? this.logistic.toJSON() : null, gbm: this.gbm ? this.gbm.toJSON() : null,
-      baseRate: this.baseRate, calibrated: !!this.calibrator, calibrator: this.calibrator ? this.calibrator.toJSON() : null, l2c: this.l2c,
+      baseRate: this.baseRate, trainBaseRate: this.trainBaseRate, calibrated: !!this.calibrator, calibrator: this.calibrator ? this.calibrator.toJSON() : null, l2c: this.l2c,
       nTrain: this.nTrain, trainedThrough: this.trainedThrough, horizon: this.horizon, ahead: this.ahead, tf: this.tf,
       summary: this.summary,
     };
@@ -875,6 +899,11 @@ function trainStacker(dataset, opts = {}) {
     const m = fitModel(Xtr, ytr, trR.map(r => r.t), f.train.map(k => ends[k]), mo);
     const base = m.baseRate;
     const cal = fitPanelCalibrator(trR.map((r, j) => ({ p: pRawOf(r), y: ytr[j], t: r.t })), ahead);
+    // (c) class-conditional base rate (Laplace-smoothed, ≥ 30 rows else the pooled base rate):
+    // a model that only learned "alts underperform BTC" must not look like signal skill.
+    const cls = new Map();
+    trR.forEach((r, j) => { const c = normClass(r.assetClass), e = cls.get(c) || { n: 0, s: 0 }; e.n++; e.s += ytr[j]; cls.set(c, e); });
+    const classBase = r => { const e = cls.get(normClass(r.assetClass)); return e && e.n >= 30 ? (e.s + 1) / (e.n + 2) : base; };
     const foldPreds = [];
     for (const k of f.test) {
       const r = rows[k];
@@ -882,6 +911,7 @@ function trainStacker(dataset, opts = {}) {
       const o = {
         t: r.t, assetId: r.assetId, p: pr.p, y: Y[k], pBaseline: calibratedOr(cal, pRawOf(r), base), pBase: base,
         pLog: pr.pLog, pGbm: pr.pGbm, pRaw: isNum(r.pRaw) ? r.pRaw : null, fold: f.k, tEnd: ends[k], pCal: null,
+        pClassBase: classBase(r), pCalBase: null,
       };
       oos.push(o); foldPreds.push(o);
     }
@@ -900,16 +930,22 @@ function trainStacker(dataset, opts = {}) {
     if (pairs.length < 100) continue;
     const cal = fitPanelCalibrator(pairs, ahead);
     if (!cal.reliable) continue;
-    for (const o of oos) if (o.fold === b) o.pCal = cal.apply(o.p);
+    // the calibrated scale is centred on the base rate of the calibration pairs — the centre an
+    // "edge" (pCal − base) must be measured from, or a level shift between the training window
+    // and the calibration window would turn every row into a same-side call.
+    const calBase = mean(pairs.map(q => q.y));
+    for (const o of oos) if (o.fold === b) { o.pCal = cal.apply(o.p); o.pCalBase = calBase; }
   }
 
   // ── metrics on the SAME OOS rows ──
-  const lag = lagInDates(oos.map(o => o.t), ahead, tf);
+  const lag = dmLag(oos, ahead, tf);
   const dates = oos.map(o => o.t);
   const ll = key => oos.map(o => logloss1(o[key], o.y));
   const mS = probMetrics(oos, "p"), mB = probMetrics(oos, "pBaseline"), mR = probMetrics(oos, "pBase");
   const dm = dieboldMariano(ll("p"), ll("pBaseline"), { dates, lag });
   const dmBase = dieboldMariano(ll("p"), ll("pBase"), { dates, lag });
+  const mC = probMetrics(oos, "pClassBase");
+  const dmClass = dieboldMariano(ll("p"), ll("pClassBase"), { dates, lag });
   const cr = oos.filter(o => o.pCal !== null);
   const calibrated = cr.length ? (() => {
     const a = probMetrics(cr, "pCal"), b = probMetrics(cr, "pBaseline"), raw = probMetrics(cr, "p");
@@ -925,6 +961,7 @@ function trainStacker(dataset, opts = {}) {
     baseRate: { auc: mR.auc, brier: mR.brier, logloss: mR.logloss },
     brierSkill: mB.brier ? r6(1 - mS.brier / mB.brier) : null,
     brierSkillVsBase: mR.brier ? r6(1 - mS.brier / mR.brier) : null,
+    classBase: { auc: mC.auc, brier: mC.brier, logloss: mC.logloss, dm: roundDm(dmClass) },
     dm: roundDm(dm), dmVsBase: roundDm(dmBase),
     aucCI: boot ? boot.p : null, aucBaselineCI: boot ? boot.pBaseline : null, aucDiffCI: boot ? boot.diff : null,
     logistic: kind !== "gbm" ? probMetrics(oos, "pLog") : null,
@@ -947,14 +984,17 @@ function trainStacker(dataset, opts = {}) {
   const calibrator = cal.reliable ? cal : null;
   const trainedThrough = rows.length ? rows[rows.length - 1].t : null;
   const model = new Stacker({
-    spec, target, kind, logistic: fm.logistic, gbm: fm.gbm, baseRate: fm.baseRate, calibrator, l2c: fm.l2c, nTrain: rows.length,
+    spec, target, kind, logistic: fm.logistic, gbm: fm.gbm, calibrator, l2c: fm.l2c, nTrain: rows.length,
+    // baseRate = the centre of predict()'s scale: the OOS-period base rate the calibrator was fitted
+    // on (≈ mean calibrated p), else the training base rate. trainBaseRate = all training rows.
+    baseRate: calibrator ? mean(oos.map(o => o.y)) : fm.baseRate, trainBaseRate: fm.baseRate,
     trainedThrough, horizon: params.horizon, ahead, tf,
     summary: { auc: metrics.auc, logloss: metrics.logloss, loglossBaseline: metrics.loglossBaseline, dmP: metrics.dm.p, n: metrics.n },
   });
   return {
     model, spec, target,
     oos: oos.map(o => ({
-      t: o.t, assetId: o.assetId, p: o.p, y: o.y, pBaseline: o.pBaseline, pBase: o.pBase, pCal: o.pCal,
+      t: o.t, assetId: o.assetId, p: o.p, y: o.y, pBaseline: o.pBaseline, pBase: o.pBase, pClassBase: o.pClassBase, pCal: o.pCal, pCalBase: o.pCalBase,
       pLog: o.pLog, pGbm: o.pGbm, pRaw: o.pRaw, fold: o.fold, tEnd: o.tEnd,
     })),
     metrics, trainedThrough, labelsThrough: ends.reduce((a, v) => (v > a ? v : a), -Infinity), params,
@@ -1112,6 +1152,6 @@ module.exports = {
   featurize, makeSpec, trainStacker, Stacker, dieboldMariano, purgedWalkForward,
   // building blocks reused by metaLabel.js / tests / the self-improvement loop
   computeLabelEnds, labelOf, prepareRows, fitModel, predictModel, resolveModelOpts, probMetrics, hacMeanTest,
-  aucBlockBootstrap, lagInDates, fitPanelCalibrator, calibratedOr, resolveMask, familyOf, sigPair, sortRows, tCdf, normCdf, synthDataset,
+  aucBlockBootstrap, lagInDates, dmLag, fitPanelCalibrator, calibratedOr, resolveMask, familyOf, sigPair, sortRows, tCdf, normCdf, synthDataset,
   TARGETS, MODELS, DEFAULTS, FAMILY_PREFIX,
 };

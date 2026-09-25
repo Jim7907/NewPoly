@@ -131,3 +131,16 @@ test("cryptoSignals: overhang, drawdown, relative strength", () => {
   const dd = (p) => cryptoSignals({ symbol: "X", athChangePct: p })[0].score;
   assert.ok(dd(-90) < 0 && dd(-3) > 0);
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: staleness is measured from the fiscal period end, not the fetch time (asOf)", () => {
+  const now = Date.UTC(2026, 8, 25);
+  const fresh = { ...PERFECT, asOf: new Date(now).toISOString(), periodEnd: "2026-06-27" };
+  const stale = { ...PERFECT, asOf: new Date(now).toISOString(), periodEnd: "2024-12-31" };
+  const a = stockSignals(fresh, { horizon: "position", now }), b = stockSignals(stale, { horizon: "position", now });
+  const conf = (arr, id) => arr.find((s) => s.id === id).confidence;
+  assert.ok(conf(b, "fund.quality.roe") < 0.6 * conf(a, "fund.quality.roe") + 1e-9, "21-month-old statements are faded");
+  // 90 days after the period end (normal filing cadence) is not penalised
+  const q = stockSignals({ ...PERFECT, periodEnd: "2026-06-27", asOf: null }, { horizon: "position", now: Date.UTC(2026, 8, 25) });
+  assert.strictEqual(conf(q, "fund.quality.roe"), conf(a, "fund.quality.roe"));
+});

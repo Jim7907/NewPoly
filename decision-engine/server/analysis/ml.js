@@ -16,6 +16,8 @@
 //  * Everything is deterministic (seeded PRNG for GBM row subsampling).
 "use strict";
 
+const { projectFormingVolume } = require("./indicators");
+
 // ─── small numeric helpers ───────────────────────────────────────────────────────────────────
 const EPS = 1e-12;
 const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
@@ -707,8 +709,14 @@ function confidenceFrom(aucV, chunkShare, preds, ahead = 1) {
 /**
  * ML signals: `ml.ensemble.pup` (primary) plus `ml.logistic.pup` / `ml.gbm.pup` (audit; their
  * confidence is halved so the correlated trio does not triple-count in the ensemble).
- * score = 2p − 1; confidence = clamp((OOS AUC − 0.52)/0.08, 0, 1) × stability (see
- * confidenceFrom). The reason always states the OOS AUC and whether it beats chance.
+ * score = 2·(p − b), b = the model's training base rate (share of up-labels after the dead zone);
+ * value.p keeps the raw P(up). AUDIT (2026-09): the score used to be 2p − 1, so a model with no
+ * skill (p ≈ b ≈ 0.57 on large-cap stocks) still cast a constant bullish vote — drift the class
+ * calibrator already prices in, i.e. counted twice. Every other family scores a view RELATIVE to
+ * "nothing special"; for a probability model that reference is its base rate.
+ * confidence = clamp((AUC_lcb − 0.50)/0.06, 0, 1) × stability (see confidenceFrom). The reason
+ * always states the OOS AUC and whether it beats chance. Inference features use
+ * projectFormingVolume (a still-forming last bar's volume is pro-rated to a full bar).
  * opts: { ahead=5, key (cache id, e.g. "<assetId>|<tfSec>"), horizon, minTrain, step, costBps,
  *         noCache } — minTrain/step/dead-zone defaults depend on bar spacing (see resolveOpts).
  */
@@ -720,9 +728,10 @@ function signals(candles, opts = {}) {
   try { res = opts.noCache ? trainWalkForward(candles, opts) : getModel(key, candles, { ...opts, ahead }); }
   catch (_) { return []; }
   if (!res || !res.model) return [];
-  const x = buildFeaturesFast(candles);
+  const x = buildFeaturesFast(projectFormingVolume(candles, { now: Number.isFinite(opts.now) ? opts.now : Date.now() }));
   if (!x) return [];
   const pr = res.model.predict(x);
+  const base = Number.isFinite(res.model.baseRate) ? clamp(res.model.baseRate, 0.05, 0.95) : 0.5;
   const horizon = opts.horizon || "any";
   const enough = res.nOos >= MIN_OOS;
   const pm = res.perModel || { logistic: { auc: 0.5 }, gbm: { auc: 0.5 } };
@@ -730,7 +739,7 @@ function signals(candles, opts = {}) {
   const stLog = stabilityOf(res.oosPredictions, "pLog").stability;
   const stGbm = stabilityOf(res.oosPredictions, "pGbm").stability;
   const mk = (id, p, aucV, conf, label) => {
-    const score = clamp(2 * p - 1, -1, 1);
+    const score = clamp(2 * (p - base), -1, 1);
     const lcb = aucLowerBound(aucV, P, ahead);
     const verdict = !enough
       ? `not enough out-of-sample history (${res.nOos} OOS bars < ${MIN_OOS}) — no confidence`
@@ -739,8 +748,8 @@ function signals(candles, opts = {}) {
         : `walk-forward OOS AUC ${aucV.toFixed(3)} over ${res.nOos} bars (95% lower bound ${lcb.toFixed(3)} > 0.5)`;
     return {
       id, family: "ml", score: fin(score), confidence: clamp(fin(conf), 0, 1), horizon,
-      value: { p: +p.toFixed(4), oosAuc: +fin(aucV, 0.5).toFixed(4), aucLcb: +fin(lcb, 0).toFixed(4), n: res.nOos, nTrain: res.nTrain, ahead },
-      reason: `${label} P(up ${ahead} bars) = ${(p * 100).toFixed(1)}%; ${verdict}`,
+      value: { p: +p.toFixed(4), baseRate: +base.toFixed(4), oosAuc: +fin(aucV, 0.5).toFixed(4), aucLcb: +fin(lcb, 0).toFixed(4), n: res.nOos, nTrain: res.nTrain, ahead },
+      reason: `${label} P(up ${ahead} bars) = ${(p * 100).toFixed(1)}% vs ${(base * 100).toFixed(1)}% base rate; ${verdict}`,
     };
   };
   const cEns = confidenceFrom(res.oosAuc, res.stability, P, ahead);

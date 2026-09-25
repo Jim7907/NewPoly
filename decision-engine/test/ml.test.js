@@ -163,7 +163,8 @@ test("signals shape, determinism, and caching", () => {
     assert.strictEqual(s.horizon, "swing");
     assert.ok(s.score >= -1 && s.score <= 1 && Number.isFinite(s.score));
     assert.ok(s.confidence >= 0 && s.confidence <= 1);
-    assert.ok(Math.abs(s.score - (2 * s.value.p - 1)) < 1e-3);
+    // audit fix: score is centred on the model's base rate (a no-skill model no longer votes the drift)
+    assert.ok(Math.abs(s.score - 2 * (s.value.p - s.value.baseRate)) < 1e-3);
     for (const k of ["p", "oosAuc", "n"]) assert.ok(Number.isFinite(s.value[k]));
   }
   const t1 = Date.now();
@@ -187,4 +188,30 @@ test("not enough OOS history → confidence 0 with honest reason", () => {
   const s = ml.signals(cs, { ahead: 5, noCache: true });
   assert.ok(s.length === 3);
   for (const x of s) { assert.strictEqual(x.confidence, 0); assert.match(x.reason, /not enough out-of-sample/); }
+});
+
+// ── Audit regressions (2026-09) ──
+test("audit: a no-skill model on a drifting series does not cast a constant drift vote", () => {
+  // strong upward drift, no autocorrelation: P(up over 5 bars) ≈ 0.6 unconditionally, no signal
+  const up = gen(900, 12).map((k, i, a) => ({ ...k }));
+  let c = 100; const rnd = ml.mulberry32(99);
+  const g = () => { let u = 0; while (!u) u = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rnd()); };
+  for (const k of up) { const o = c; c = o * Math.exp(0.004 + 0.02 * g()); Object.assign(k, { o, c, h: Math.max(o, c) * 1.002, l: Math.min(o, c) * 0.998 }); }
+  const s = ml.signals(up, { ahead: 5, noCache: true, minTrain: 300 })[0];
+  assert.ok(s.value.baseRate > 0.55, `base ${s.value.baseRate}`);
+  const legacy = 2 * s.value.p - 1;
+  assert.ok(Math.abs(s.score) < Math.abs(legacy), `centred ${s.score} vs legacy ${legacy}`);
+  assert.ok(Math.abs(s.score - 2 * (s.value.p - s.value.baseRate)) < 1e-3);
+});
+
+test("audit: inference features pro-rate a still-forming last bar's volume", () => {
+  const cs = gen(400, 3);
+  const now = cs.at(-1).t + 0.2 * 86400000;                  // 20% into the last bar
+  const partial = cs.map((k, i) => (i === cs.length - 1 ? { ...k, v: k.v * 0.2 } : k));
+  const iv = ml.FEATURE_NAMES.indexOf("vol_z_20");
+  const fFull = ml.buildFeatures(cs, cs.length - 1), fPart = ml.buildFeatures(partial, partial.length - 1);
+  assert.ok(fPart[iv] < fFull[iv] - 1, "raw partial bar looks like a volume collapse");
+  const I = require("../server/analysis/indicators");
+  const fProj = ml.buildFeatures(I.projectFormingVolume(partial, { now }), partial.length - 1);
+  assert.ok(Math.abs(fProj[iv] - fFull[iv]) < 1e-9, `${fProj[iv]} vs ${fFull[iv]}`);
 });

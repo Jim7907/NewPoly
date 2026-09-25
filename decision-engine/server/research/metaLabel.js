@@ -10,8 +10,9 @@
 //                each walk-forward fold; base = that fold's training base rate of primaryTarget.
 //                A fold whose calibrator is not reliable (n_eff < 30) gives p = base (no call).
 //    "stacker" : the stacker's walk-forward OOS predictions, SEQUENTIALLY calibrated (oos.pCal —
-//                the same calibrated scale Stacker.predict returns live); base = the fold's
-//                training base rate. Pass a trainStacker() result as opts.stacker, or let this
+//                the same calibrated scale Stacker.predict returns live); base = the base rate of
+//                the pairs that calibrator was fitted on (oos.pCalBase), i.e. the centre of the
+//                calibrated scale (live: Stacker.baseRate). Pass a trainStacker() result as opts.stacker, or let this
 //                module train one. A bare Stacker is refused: its predictions on history would be
 //                in-sample, and a meta model trained on in-sample primary calls learns nothing true.
 //  Primary side  = sign(p − base) when |p − base| ≥ minEdge, otherwise no trade (not a meta row,
@@ -98,7 +99,9 @@ function stackerPrimary(dataset, st) {
   if (!st || !Array.isArray(st.oos)) {
     throw new Error("primary \"stacker\" needs a trainStacker() result with walk-forward OOS predictions (a bare Stacker's predictions on history are in-sample)");
   }
-  const preds = st.oos.filter(o => isNum(o.pCal)).map(o => ({ t: o.t, assetId: o.assetId, p: o.pCal, pBase: o.pBase, fold: o.fold }));
+  // centre = base rate of the pairs the sequential calibrator was fitted on (pCalBase), matching
+  // live use (Stacker.predict − Stacker.baseRate); older results without it fall back to pBase.
+  const preds = st.oos.filter(o => isNum(o.pCal)).map(o => ({ t: o.t, assetId: o.assetId, p: o.pCal, pBase: isNum(o.pCalBase) ? o.pCalBase : o.pBase, fold: o.fold }));
   const baseRate = st.model && isNum(st.model.baseRate) ? st.model.baseRate : mean(st.oos.map(o => o.y));
   return { preds, baseRate };
 }
@@ -295,7 +298,7 @@ function trainMetaLabeler(dataset, opts = {}) {
     for (const k of f.test) {
       const r = M.rows[k];
       const pm = S.predictModel(m, metaFeatures(r, M.side[k], Math.abs(M.edge[k]), spec));
-      const o = { t: r.t, assetId: r.assetId, side: M.side[k], edge: M.edge[k], p: M.p[k], pMeta: pm.p, pLog: pm.pLog, pGbm: pm.pGbm, y: M.y[k], ret: M.ret[k], fold: f.k, pTrainBase: m.baseRate };
+      const o = { t: r.t, tEnd: M.ends[k], assetId: r.assetId, side: M.side[k], edge: M.edge[k], p: M.p[k], pMeta: pm.p, pLog: pm.pLog, pGbm: pm.pGbm, y: M.y[k], ret: M.ret[k], fold: f.k, pTrainBase: m.baseRate };
       oos.push(o); fp.push(o);
     }
     const fm = S.probMetrics(fp, "pMeta");
@@ -305,7 +308,7 @@ function trainMetaLabeler(dataset, opts = {}) {
   // 4. OOS report
   const t0 = splits[0].testStart, t1 = splits[splits.length - 1].testEnd;
   const nAll = opp.filter(t => t >= t0 && t <= t1).length;
-  const lag = S.lagInDates(oos.map(o => o.t), ahead, tf);
+  const lag = S.dmLag(oos, ahead, tf);
   const thresholds = opts.thresholds || REPORT_THRESHOLDS;
   const precisionAt = precisionCoverage(oos, thresholds, { nAll, lag });
   const pm = S.probMetrics(oos, "pMeta"), pb = S.probMetrics(oos, "pTrainBase");

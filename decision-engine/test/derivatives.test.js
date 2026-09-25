@@ -60,3 +60,24 @@ test("basis premium and missing inputs", () => {
     assert.ok(Number.isFinite(s.score) && Number.isFinite(s.confidence));
   }
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: OI change and price change are measured over the SAME recent window", () => {
+  const DAY = 86400e3, t0 = Date.UTC(2026, 2, 29, 16);
+  // 180 daily OI points (like OKX rubik): OI doubled over 6 months, flat over the last 10 days
+  const oiHistory = Array.from({ length: 180 }, (_, i) => ({ t: t0 + i * DAY, oi: i < 170 ? 1e9 * (1 + i / 170) : 2e9 }));
+  const tEnd = oiHistory.at(-1).t;
+  // 300 hourly candles (12.5 days) ending at the last OI stamp: price +10% over that span
+  const candles = Array.from({ length: 300 }, (_, i) => ({ t: tEnd - (299 - i) * 3600e3, o: 100, h: 101, l: 99, c: 100 * (1 + 0.1 * i / 299), v: 1 }));
+  const s = byId(signals({ oiHistory }, { candles }))["deriv.oi.price_confirmation"];
+  assert.ok(Math.abs(s.value.oiChange) < 1e-9, `OI change must be the recent (flat) window, got ${s.value.oiChange}`);
+  // price change over the same 7 days (≈ 7/12.46 of the 10% ramp), not the whole candle history
+  assert.ok(s.value.priceChange > 0.04 && s.value.priceChange < 0.07, `${s.value.priceChange}`);
+  // no fragility signal from a 6-month OI build-up
+  assert.ok(!byId(signals({ oiHistory, fundingRate: 0.0005 }, { candles }))["deriv.oi.fragility"]);
+  // the window is configurable and seconds-epoch timestamps are still understood
+  const secs = oiHistory.map(p => ({ t: p.t / 1000, oi: p.oi }));
+  const s2 = byId(signals({ oiHistory: secs }, { candles, oiWindowMs: 30 * DAY }))["deriv.oi.price_confirmation"];
+  // 30 d requested, but candles only cover 12.5 d → trimmed (untrimmed 30 d would read ≈ +6%)
+  assert.ok(Math.abs(s2.value.oiChange) < 0.02, `window trimmed to what candles cover: ${s2.value.oiChange}`);
+});

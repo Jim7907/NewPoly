@@ -131,6 +131,7 @@ test("stacker primary: uses sequentially-calibrated OOS stacker calls only; a ba
     const s = stKeys.get(`${o.t}|${o.assetId}`);
     assert.ok(s, "every meta row is a stacker OOS row");
     assert.strictEqual(o.p, s.pCal);
+    assert.ok(Math.abs(o.edge - (s.pCal - s.pCalBase)) < 1e-12, "edge is measured from the calibrated scale's centre");
   }
   assert.strictEqual(r.model.primary, "stacker");
   assert.strictEqual(r.model.primaryBaseRate, st.model.baseRate);
@@ -151,6 +152,14 @@ test("noise meta (leakage guard): primary trades on noise → meta AUC ≈ 0.5, 
   assert.ok(m.n > 2000);
   assert.ok(Math.abs(m.auc - 0.5) < 0.04, `auc ${m.auc}`);
   assert.ok(m.aucCI[0] < 0.5 && m.aucCI[1] > 0.5);
-  const at = m.precisionAt["0.5"];
-  assert.ok(!(at.lift > 0 && at.liftP < 0.05), `spurious lift ${JSON.stringify(at)}`);
+  // no threshold (0.40…0.70 grid, ≥ 50 kept trades) shows a significant precision lift
+  const tab = ML.precisionCoverage(r.oos, Array.from({ length: 31 }, (_, k) => +(0.4 + 0.01 * k).toFixed(2)), { nAll: m.nOpportunities, lag: m.lag });
+  let tested = 0;
+  for (const [thr, e] of Object.entries(tab)) {
+    if (e.n < 50 || e.liftP === null) continue;
+    tested++;
+    assert.ok(!(e.lift > 0 && e.liftP < 0.01), `spurious lift at ${thr}: ${JSON.stringify(e)}`);
+  }
+  assert.ok(tested >= 3);
+  assert.strictEqual(m.raisesPrecision.at055, false);
 });

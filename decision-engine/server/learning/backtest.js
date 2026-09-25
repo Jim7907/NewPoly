@@ -10,6 +10,12 @@
 // Outputs trades, a mark-to-market equity curve, metrics (vs buy-and-hold), calibration pairs
 // (pRaw → y, y = 1 if close[i+ahead] > close[i]) for the Calibrator and per-signal hit stats for
 // the WeightLearner. Calibration pairs overlap when stride < ahead: n_eff ≈ n·stride/ahead.
+// signalStats[id] = { n, hits, hitRate, nLong, yUp, ahead }: nLong/yUp let the learner separate
+// skill from drift (a always-bullish vote "hits" the base rate for free) and `ahead` gives n_eff.
+// AUDIT (2026-09): the live engine runs technical.multiTimeframe, whose base-timeframe ids are
+// tech.<tf>.<sub>.<name> (e.g. tech.1d.trend.ema_stack) while this backtest emits tech.<sub>.<name>;
+// only the 4 regime ids ever matched, so the seeded technical priors never reached a live signal.
+// Every base-tf technical stat is therefore also published under its live MTF id (alias: <id>).
 //
 // Dependency injection: opts.analyzers = { technical(window, ctx), regime(window, ctx),
 // regimeSignals(regime, ctx), ml(windowFromStart, ctx), atr(window) } — any subset overrides the
@@ -25,6 +31,8 @@ const risk = require("../decision/risk");
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const fin = (v, d = 0) => (Number.isFinite(v) ? v : d);
+// Same names as server/data/index.js TF_NAMES (the MTF ids the engine produces).
+const TF_NAMES = { 60: "1m", 300: "5m", 900: "15m", 1800: "30m", 3600: "1h", 14400: "4h", 21600: "6h", 86400: "1d", 604800: "1w" };
 const r6 = (x) => (Number.isFinite(x) ? Math.round(x * 1e6) / 1e6 : null);
 
 function tryRequire(p) { try { return require(p); } catch { return null; } }
@@ -237,8 +245,10 @@ function run(params = {}) {
       evals.push({ p: d.pUp, y, action: d.action });
       for (const s of sigs) {
         if (!(s.confidence > 0) || Math.abs(s.score) < 0.05) continue;
-        const st = signalStats[s.id] || (signalStats[s.id] = { n: 0, hits: 0 });
+        const st = signalStats[s.id] || (signalStats[s.id] = { n: 0, hits: 0, nLong: 0, yUp: 0, ahead: H });
         st.n++; if ((s.score > 0) === (y === 1)) st.hits++;
+        if (s.score > 0) st.nLong++;
+        st.yUp += y;
       }
     }
     if (!pos && !pending && atr > 0) {
@@ -285,6 +295,12 @@ function run(params = {}) {
     sizing, stride, useML: !!an.ml,
   };
   for (const st of Object.values(signalStats)) st.hitRate = st.n ? r6(st.hits / st.n) : null;
+  const tfLabel = TF_NAMES[fin(hz.tf, 86400)];
+  if (tfLabel) for (const id of Object.keys(signalStats)) {
+    if (!/^tech\./.test(id) || /^tech\.(\d+[mhdw]|mtf)\./.test(id)) continue;
+    const alias = `tech.${tfLabel}.${id.slice(5)}`;
+    if (!signalStats[alias]) signalStats[alias] = { ...signalStats[id], alias: id };
+  }
 
   // ---- honest caveats ----
   if (trades.length < 30) notes.push(`Only ${trades.length} trades: Sharpe, hit rate and profit factor are statistically unreliable (need ≥ 30, ideally ≥ 100). Hit-rate 95% CI ${hitLo == null ? "n/a" : `${(hitLo * 100).toFixed(0)}–${(hitHi * 100).toFixed(0)}%`}.`);
@@ -348,7 +364,7 @@ async function main() {
   const out = args.full ? res : {
     asset: res.asset, horizon, candles: candles.length, runtimeSec: (Date.now() - t0) / 1000, metrics: res.metrics, notes: res.notes,
     lastTrades: res.trades.slice(-10), nCalibrationPairs: res.calibrationPairs.length,
-    topSignals: Object.entries(res.signalStats).filter(([, s]) => s.n >= 50).sort((a, b) => b[1].hitRate - a[1].hitRate)
+    topSignals: Object.entries(res.signalStats).filter(([, s]) => s.n >= 50 && !s.alias).sort((a, b) => b[1].hitRate - a[1].hitRate)
       .map(([id, s]) => ({ id, ...s })),
   };
   console.log(JSON.stringify(out, null, 2));

@@ -383,11 +383,17 @@ function fearGreedSignal(fg) {
   const t = Math.tanh(x * x * x);
   let score = -0.65 * t;
   let conf = 0.2 + 0.3 * Math.abs(t);
-  const hist = Array.isArray(fg.history) ? fg.history.map((h) => Number(h && (h.v ?? h.value))).filter(isNum) : [];
+  // Latest 7 observations. AUDIT (2026-09): the order used to be guessed from which end of the
+  // array was closer to the current value; the data layer returns OLDEST-first and on ties (e.g. 71
+  // a month ago and 71 today, seen live) the guess averaged the oldest week. Timestamps decide now;
+  // without them, entries are assumed oldest-first (the data-layer contract).
+  const raw = Array.isArray(fg.history) ? fg.history.filter((h) => h && isNum(Number(h.v ?? h.value))) : [];
+  const timed = raw.length && raw.every((h) => isNum(Number(h.t ?? h.ts ?? h.timestamp)));
+  const ordered = timed ? raw.slice().sort((a, b) => Number(a.t ?? a.ts ?? a.timestamp) - Number(b.t ?? b.ts ?? b.timestamp)) : raw;
+  const hist = ordered.map((h) => Number(h.v ?? h.value));
   let avg7 = null;
   if (hist.length >= 7) {
-    // history newest-first or oldest-first is unknown → average of 7 obs nearest the current reading is robust enough
-    const recentSlice = Math.abs(hist[0] - v) <= Math.abs(hist[hist.length - 1] - v) ? hist.slice(0, 7) : hist.slice(-7);
+    const recentSlice = hist.slice(-7);
     avg7 = recentSlice.reduce((a, b) => a + b, 0) / recentSlice.length;
     if ((avg7 - 50) * (v - 50) > 0 && Math.abs(avg7 - 50) > 20) conf += 0.05; // persistent extreme
   }

@@ -30,7 +30,8 @@
 //     (point-in-time: a row never uses a regime fitted after its own bar). Assets are spread over
 //     worker threads (opts.workers). Results do not depend on the number of workers.
 //   * updateDataset is incremental: only bars after each asset's last row are computed, and
-//     labels are filled for rows whose window has matured since.
+//     labels are filled for rows whose window has matured since. ds.meta.codeHash fingerprints the
+//     analyzer/ensemble sources; an update run on different code sets lastUpdate.codeChanged.
 //
 // Row / Dataset shapes: see the contract. Extras: lab.tEnd, ds.signalFamily {id: family},
 // ds.meta {stride, lookback, warmup, regimeEvery, costsBps, families, timing, notes}.
@@ -188,6 +189,19 @@ function fngSignalsAt(ctx, t) {
   return sigs;
 }
 
+// ───────────────────────────── code fingerprint ─────────────────────────────
+// Rows are only comparable if they were computed by the same analyzer / ensemble code. The hash of
+// those sources is stored in ds.meta.codeHash; updateDataset flags a change (full rebuild advised).
+const CODE_FILES = ["../analysis/technical.js", "../analysis/indicators.js", "../analysis/regime.js", "../analysis/macro.js",
+  "../analysis/sentiment.js", "../analysis/relative.js", "../decision/ensemble.js", "./dataset.js"];
+function codeHash() {
+  const h = require("crypto").createHash("sha1");
+  for (const f of CODE_FILES) {
+    try { h.update(f); h.update(fs.readFileSync(path.join(__dirname, f))); } catch { h.update(`${f}:missing`); }
+  }
+  return h.digest("hex").slice(0, 16);
+}
+
 // ───────────────────────────── relative family (optional) ─────────────────────────────
 function loadRelative(override) {
   if (override === null || override === false) return null;
@@ -338,7 +352,9 @@ function computeAssetRows(jobIn, env, relMod, onRow) {
 
     const sigs = [];
     const push = (xs) => { if (Array.isArray(xs)) for (const s of xs) if (s && s.id && isNum(Number(s.score))) sigs.push(s); };
-    push(safe("technical", () => technical.analyze(window, { horizon: job.horizon, assetClass: techCls })));
+    // now = this bar's close: the bar is complete (no forming-bar volume projection), and the result
+    // cannot depend on the wall clock.
+    push(safe("technical", () => technical.analyze(window, { horizon: job.horizon, assetClass: techCls, now: t + job.tf * 1000 })));
     if (regime) push(safe("regimeSignals", () => regimeMod.signals(regime)));
     push(safe("macro", () => macroSignalsAt(ctx, asset, t)));
     if (cls === "crypto") push(safe("fearGreed", () => fngSignalsAt(ctx, t)));
@@ -707,7 +723,7 @@ async function buildDataset(opts = {}) {
       stride: S.stride, lookback: S.lookback, warmup: S.warmup, regimeEvery: S.regimeEvery,
       relativeInput: S.relativeInput,
       bracket: S.bracket, costsBps: { stock: roundTripCost(cfg, "stock") * 1e4, crypto: roundTripCost(cfg, "crypto") * 1e4 },
-      families: plan, relative: !!relMod,
+      families: plan, relative: !!relMod, codeHash: codeHash(),
       candles: Object.fromEntries(assets.map((a) => { const c = data.get(a.id).candles; return [a.id, { n: c.length, from: c.length ? c[0].t : null, to: c.length ? c[c.length - 1].t : null }]; })),
       timing: { totalMs: Date.now() - tStart, fetchMs: inp.fetchMs, computeMs, workers, rows: rows.length },
       notes,
@@ -822,8 +838,12 @@ async function updateDataset(ds, opts = {}) {
   ds.signalIds = collectSignalIds(ds.rows);
   ds.universe = uniq([...(ds.universe || []), ...assets.map((a) => a.id)]);
   ds.built = new Date().toISOString();
-  ds.meta = { ...m, families: plan, relative: !!relMod,
-    lastUpdate: { newRows, maturedLabels: matured, assets: jobs.length, ms: Date.now() - tStart, fetchMs: inp.fetchMs, workers } };
+  const hashNow = codeHash();
+  const codeChanged = !!(m.codeHash && m.codeHash !== hashNow);
+  const notes = Array.isArray(m.notes) ? m.notes.slice() : [];
+  if (codeChanged) notes.push(`${new Date().toISOString()}: analyzer/ensemble code changed since the build (${m.codeHash} → ${hashNow}); rows before and after this update come from different code — a full rebuild is advised`);
+  ds.meta = { ...m, families: plan, relative: !!relMod, notes,
+    lastUpdate: { newRows, maturedLabels: matured, assets: jobs.length, ms: Date.now() - tStart, fetchMs: inp.fetchMs, workers, codeChanged, codeHash: hashNow } };
   return ds;
 }
 
@@ -883,5 +903,5 @@ function loadDataset(file) {
 module.exports = {
   buildDataset, updateDataset, saveDataset, loadDataset, RESEARCH_UNIVERSE,
   researchUniverse, toAsset, tripleBarrier, cleanCandles, fetchMacroHistory, fetchFearGreedHistory,
-  defaultFile, DATA_DIR, BENCHMARKS, VERSION,
+  codeHash, defaultFile, DATA_DIR, BENCHMARKS, VERSION,
 };

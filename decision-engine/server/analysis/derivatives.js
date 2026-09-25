@@ -19,6 +19,15 @@
 
 const FAMILY = "derivatives";
 const NEUTRAL_FUNDING = 0.0001; // +0.01% per 8h
+// OI/price quadrants are read over a common recent window. AUDIT (2026-09): OKX rubik
+// open-interest-volume returns ~180 DAILY points, and the whole history was used for the OI change
+// while the price change came from 300 hourly candles (12.5 days) — e.g. BTC "OI +8.0% (179 d),
+// price +9.2% (12.5 d)". Both are now measured over the same window (default 7 days, opts.oiWindowMs),
+// trimmed to what the price candles cover, with the price change taken between the candles that
+// bracket the first and last OI observations.
+const OI_WINDOW_MS = 7 * 86400000;
+// Epoch seconds (≈1.7e9 today) → ms; ms epochs (≈1.7e12) and small synthetic ms offsets pass through.
+const toMs = (t) => (t >= 1e9 && t < 1e11 ? t * 1000 : t);
 const isNum = (x) => typeof x === "number" && Number.isFinite(x);
 const num = (x) => (typeof x === "string" && x.trim() !== "" ? Number(x) : x);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -43,18 +52,31 @@ function series(arr, key) {
     .sort((a, b) => (isNum(a.t) && isNum(b.t) ? a.t - b.t : 0));
 }
 
-function priceChangeFrom(d, opts, oiSeries) {
+function candlesOf(opts) {
+  return opts && Array.isArray(opts.candles) ? opts.candles.filter((k) => k && isNum(k.c) && k.c > 0 && isNum(k.t)).sort((a, b) => a.t - b.t) : [];
+}
+
+// Recent OI window (see OI_WINDOW_MS), trimmed so the price candles cover its start.
+function oiWindow(oiSeries, opts, c) {
+  if (oiSeries.length < 2 || !oiSeries.every((p) => isNum(p.t))) return oiSeries;
+  const win = opts && isNum(opts.oiWindowMs) ? opts.oiWindowMs : OI_WINDOW_MS;
+  const tEnd = toMs(oiSeries[oiSeries.length - 1].t);
+  let w = oiSeries.filter((p) => toMs(p.t) >= tEnd - win);
+  if (c.length && w.length && toMs(w[0].t) < c[0].t) w = w.filter((p) => toMs(p.t) >= c[0].t);
+  return w;
+}
+
+function priceChangeFrom(d, opts, oiSeries, c = candlesOf(opts)) {
   if (isNum(num(d.priceChange))) return num(d.priceChange);
-  const c = opts && Array.isArray(opts.candles) ? opts.candles.filter((k) => k && isNum(k.c) && k.c > 0) : [];
   if (c.length < 2) return null;
-  let start = c[0];
+  let start = c[0], end = c[c.length - 1];
   if (oiSeries.length >= 2 && isNum(oiSeries[0].t)) {
-    const t0 = oiSeries[0].t < 1e12 ? oiSeries[0].t * 1000 : oiSeries[0].t;
+    const t0 = toMs(oiSeries[0].t), t1 = toMs(oiSeries[oiSeries.length - 1].t);
     const found = c.find((k) => k.t >= t0);
     if (found) start = found;
+    for (let i = c.length - 1; i >= 0; i--) if (c[i].t <= t1) { end = c[i]; break; }
   } else if (c.length > 24) start = c[c.length - 25];
-  const end = c[c.length - 1];
-  return start === end ? null : end.c / start.c - 1;
+  return start === end || end.t <= start.t ? null : end.c / start.c - 1;
 }
 
 function signals(d, opts = {}) {
@@ -62,8 +84,9 @@ function signals(d, opts = {}) {
   const out = [];
   const funding = num(d.fundingRate);
   const fh = series(d.fundingHistory, "rate");
-  const oiH = series(d.oiHistory, "oi");
-  const pc = priceChangeFrom(d, opts, oiH);
+  const cs = candlesOf(opts);
+  const oiH = oiWindow(series(d.oiHistory, "oi"), opts, cs);
+  const pc = priceChangeFrom(d, opts, oiH, cs);
 
   // ---- Funding crowding ----
   if (isNum(funding)) {

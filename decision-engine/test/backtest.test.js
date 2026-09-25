@@ -133,3 +133,24 @@ test("sharpeSignificance / wilson / ece helpers", () => {
   assert.ok(lo < 0.55 && hi > 0.55 && lo > 0.44 && hi < 0.65);
   assert.ok(Math.abs(BT.ece([{ p: 0.6, y: 1 }, { p: 0.6, y: 0 }], 1) - 0.1) < 1e-12);
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: signalStats carry the long/short mix + up-rate + ahead, and live MTF aliases for base-tf technical ids", () => {
+  const c = walk(700, 0.002);
+  const trend = (w) => {
+    const n = w.length, r = w[n - 1].c / w[n - 21].c - 1;
+    return [{ id: "tech.trend.tsmom", family: "technical", score: Math.max(-1, Math.min(1, r * 10)), confidence: 0.9, reason: "20d momentum" }];
+  };
+  const r = BT.run({ candles: c, asset: STOCK, horizon: "swing", analyzers: stubs({ technical: trend, regimeSignals: () => [{ id: "regime.trend.state", family: "regime", score: 0.5, confidence: 0.5 }] }), warmup: 250 });
+  const st = r.signalStats["tech.trend.tsmom"];
+  assert.ok(st.nLong >= 0 && st.nLong <= st.n && st.yUp >= 0 && st.yUp <= st.n && st.ahead === 5, JSON.stringify(st));
+  // live engine ids for the daily base timeframe are tech.1d.<sub>.<name>
+  const alias = r.signalStats["tech.1d.trend.tsmom"];
+  assert.ok(alias && alias.alias === "tech.trend.tsmom" && alias.n === st.n && alias.hits === st.hits);
+  assert.ok(!r.signalStats["regime.1d.trend.state"] && r.signalStats["regime.trend.state"], "only technical ids are aliased");
+  // a WeightLearner seeded from these stats now reaches the live id
+  const { WeightLearner } = require("../server/learning/weights");
+  const L = new WeightLearner();
+  L.seed(r.signalStats);
+  assert.strictEqual(L.get("tech.1d.trend.tsmom"), L.get("tech.trend.tsmom"));
+});

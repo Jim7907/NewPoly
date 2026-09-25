@@ -114,3 +114,17 @@ test("fearGreedSignal: contrarian at 10 and 90, flat mid", () => {
   assert.equal(none.confidence, 0);
   assert.equal(fearGreedSignal({ value: "12" }).value.value, 12);
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: fearGreedSignal averages the 7 NEWEST observations (by timestamp), not a guessed end", () => {
+  const DAY = 86400000;
+  // oldest-first (data-layer order), a month ago = 71 = today; the last week was extreme greed
+  const vals = [71, 40, 40, 40, 40, 40, 40, 40, 45, 50, 55, 60, 65, 70, 90, 92, 93, 94, 95, 96, 71];
+  const history = vals.map((v, i) => ({ t: i * DAY, v }));
+  const s = fearGreedSignal({ value: 71, history });
+  const expect = vals.slice(-7).reduce((a, b) => a + b, 0) / 7;
+  assert.strictEqual(s.value.avg7, Math.round(expect * 10) / 10);
+  // shuffled input with timestamps gives the same answer
+  const shuffled = history.slice().reverse();
+  assert.strictEqual(fearGreedSignal({ value: 71, history: shuffled }).value.avg7, s.value.avg7);
+});

@@ -312,7 +312,14 @@ function mk(id, score, confidence, value, reason) {
 
 /**
  * signals(regime) -> Signal[]
- *  regime.trend.state        direction × trend strength (trend regimes persist).
+ *  regime.trend.state        direction × trend strength (trend regimes persist). CONTEXT ONLY
+ *                            (confidence 0): AUDIT (2026-09) — it is built from the same ADX,
+ *                            efficiency ratio, EMA20/EMA50 and 50-bar regression slope as the
+ *                            technical trend subfamily, and its score correlated 0.75–0.92 with the
+ *                            technical trend view on BTC/ETH/SPY/AAPL/MSFT daily history, so pooling
+ *                            it re-counted the trend evidence a second time (a third, counting the
+ *                            ensemble's trend ×1.3 regime multiplier). The regime still conditions the
+ *                            ensemble through regime.trend / regime.vol; the score is kept for the UI.
  *  regime.hmm.state          HMM one-step-ahead expected return / vol, confidence = state
  *                            certainty × persistence.
  *  regime.vol.level          leverage effect: extreme/high vol regimes skew returns negative,
@@ -327,10 +334,10 @@ function signals(regime) {
   const ts = isNum(regime.trendStrength) ? regime.trendStrength : 0;
   {
     const score = regime.trend === "range" ? dir * ts * 0.3 : dir * (0.3 + 0.5 * ts);
-    const conf = regime.trend === "range" ? 0.15 : 0.3 + 0.4 * ts;
+    const conf = 0;   // context only — see the header (duplicate of the technical trend evidence)
     out.push(mk("regime.trend.state", score, conf,
       { trend: regime.trend, trendStrength: r4(ts), adx: r4(regime.adx), efficiency: r4(regime.efficiency) },
-      `Regime ${regime.label}: ${regime.trend === "range" ? "no persistent trend" : `${regime.trend}trend`} (ADX ${isNum(regime.adx) ? regime.adx.toFixed(0) : "n/a"}, efficiency ${isNum(regime.efficiency) ? regime.efficiency.toFixed(2) : "n/a"})`));
+      `Regime ${regime.label}: ${regime.trend === "range" ? "no persistent trend" : `${regime.trend}trend`} (ADX ${isNum(regime.adx) ? regime.adx.toFixed(0) : "n/a"}, efficiency ${isNum(regime.efficiency) ? regime.efficiency.toFixed(2) : "n/a"}) — context only, the trend evidence itself is counted in the technical family`));
   }
   const h = regime.hmm;
   if (h && Array.isArray(h.probs) && h.probs.length) {

@@ -549,6 +549,35 @@ function kalmanTrend(x, opts = {}) {
   return { level, slope, slopeSE };
 }
 
+// Live feeds (Coinbase, Kraken) return the still-FORMING current bar last. Its volume covers only
+// the elapsed part of the bar, so every volume feature (OBV slope, MFI, breakout volume ratio, the ML
+// vol_z_20) read it as a volume collapse — AUDIT (2026-09): at 54% of the UTC day BTC/ETH/SOL/DOGE
+// vol_z_20 sat 1.2–1.8σ below its complete-bar value, and ≈ −5σ (clamped) in the first hour —
+// while backtests and model training only ever see complete bars. This returns a copy whose last
+// volume is pro-rated to a full bar, v / max(minFrac, elapsed/barMs), when that bar is still open at
+// `now`; prices are untouched (a partial high/low/close is still the latest information). Completed
+// histories (backtests: now ≫ last.t + barMs) come back unchanged. barMs defaults to the median bar
+// spacing. Calendar elapsed time is exact for 24/7 crypto bars and intraday session bars.
+function projectFormingVolume(candles, { now = Date.now(), barMs = null, minFrac = 0.1 } = {}) {
+  const N = Array.isArray(candles) ? candles.length : 0;
+  if (N < 3) return candles;
+  const lastBar = candles[N - 1];
+  if (!lastBar || !isNum(lastBar.t) || !isNum(lastBar.v)) return candles;
+  let bms = isNum(barMs) && barMs > 0 ? barMs : null;
+  if (!bms) {
+    const d = [];
+    for (let i = Math.max(1, N - 60); i < N; i++) if (candles[i] && candles[i - 1] && isNum(candles[i].t) && isNum(candles[i - 1].t)) d.push(candles[i].t - candles[i - 1].t);
+    d.sort((a, b) => a - b);
+    bms = d.length ? d[d.length >> 1] : null;
+  }
+  if (!(bms > 0) || !isNum(now) || now < lastBar.t || now >= lastBar.t + bms) return candles;
+  const frac = Math.max(minFrac, (now - lastBar.t) / bms);
+  if (!(frac < 1)) return candles;
+  const out = candles.slice();
+  out[N - 1] = { ...lastBar, v: lastBar.v / frac, vRaw: lastBar.v, formingFrac: frac };
+  return out;
+}
+
 // Helpers exported for sibling modules.
 const last = (a) => {
   for (let i = a.length - 1; i >= 0; i--) if (isNum(a[i])) return a[i];
@@ -560,5 +589,5 @@ module.exports = {
   vwap, donchian, keltner, ichimoku, supertrend, logReturns, realizedVol, hurst, efficiencyRatio,
   linregSlope, zscore, percentileRank, kalmanTrend,
   // extras (not part of the contract surface, but handy and tested)
-  rma, trueRange, highestLowest, lgamma, expectedRS, isNum, last, closes,
+  rma, trueRange, highestLowest, lgamma, expectedRS, isNum, last, closes, projectFormingVolume,
 };

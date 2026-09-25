@@ -167,6 +167,15 @@ test("purgedWalkForward: split by date, no training label window overlaps the te
   assert.deepStrictEqual(S.purgedWalkForward(rows.slice(0, 50), { minTrain: 1000 }), []);
 });
 
+test("dmLag: NW lag covers the calendar span of stock labels in a mixed panel (weekend dates)", () => {
+  const rows = calendarPanel({ nDays: 120 });
+  const ends = S.computeLabelEnds(rows, { ahead: 5, tf: 86400 });
+  const preds = rows.map((r, k) => ({ t: r.t, tEnd: ends[k] }));
+  assert.ok(S.dmLag(preds, 5, 86400) >= 6, "stock 5-bar labels span ≥ 6 panel dates");
+  const cryptoOnly = preds.filter((_, k) => rows[k].assetClass === "crypto");
+  assert.strictEqual(S.dmLag(cryptoOnly, 5, 86400), 5);
+});
+
 // ─── statistics ──────────────────────────────────────────────────────────────────────────────
 test("dieboldMariano: sign, HAC on date-aggregated losses, degenerate inputs", () => {
   const rnd = mulberry32(9);
@@ -211,6 +220,7 @@ test("planted signal: stacker beats base rate and calibrated pRaw on the same OO
   assert.ok(m.logloss < m.baseRate.logloss);
   assert.ok(m.dm.stat < 0 && m.dm.p < 0.05, `dm ${JSON.stringify(m.dm)}`);
   assert.ok(m.dmVsBase.p < 0.05);
+  assert.ok(m.classBase.dm.p < 0.05 && m.classBase.logloss > m.logloss, "beats the class-conditional base rate too");
   assert.strictEqual(m.dm.lag, 5);
   assert.ok(m.aucCI[0] > 0.5 && m.aucDiffCI[0] > 0, "block-bootstrap CI excludes chance");
   // every OOS row carries both baselines, and the same rows were used

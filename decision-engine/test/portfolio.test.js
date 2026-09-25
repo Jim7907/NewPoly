@@ -67,3 +67,17 @@ test("breakeven stop after half-way to target", () => {
   portfolio.onPrice("CRYPTO:BTC", 106);
   assert.equal(db.openPositions()[0].stop, db.openPositions()[0].entry);
 });
+
+// ── Audit regressions (2026-09) ──
+test("audit: stock positions expire after `ahead` SESSIONS, crypto after calendar time", () => {
+  const { horizonEndMs } = require("../server/data/stocks");
+  const t0 = Date.now();
+  portfolio.onDecision(mkDecision({ assetId: "STOCK:AAPL", symbol: "AAPL", assetClass: "stock" }), { marketOpen: true });
+  const p = db.openPositions().find((x) => x.assetId === "STOCK:AAPL");
+  const H = cfg.HORIZONS.swing;
+  const want = horizonEndMs("stock", t0, H.ahead, H.tf);
+  assert.ok(Math.abs(p.expiresAt - want) < 5000, `${new Date(p.expiresAt).toISOString()} vs ${new Date(want).toISOString()}`);
+  portfolio.onDecision(mkDecision());
+  const c = db.openPositions().find((x) => x.assetId === "CRYPTO:BTC");
+  assert.ok(Math.abs(c.expiresAt - (t0 + H.ahead * H.tf * 1000)) < 5000);
+});
