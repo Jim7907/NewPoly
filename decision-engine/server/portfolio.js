@@ -140,7 +140,8 @@ function snapshot() {
       avgWin: wins.length ? sum(wins) / wins.length : null, avgLoss: losses.length ? sum(losses) / losses.length : null,
       realizedPnl: sum(trades),
       // Sharpe of the minute-sampled equity curve, annualized by sample count per year (approximate).
-      sharpe: sd > 0 && curve.length > 10 ? (mean / sd) * Math.sqrt(525600 / Math.max(1, (new Date(curve.at(-1).ts) - new Date(curve[0].ts)) / 60000 / rets.length)) : null,
+      // Only once the curve spans ≥ 7 days: annualizing a few hours of minute marks is meaningless.
+      sharpe: sd > 0 && curve.length > 100 && (new Date(curve.at(-1).ts) - new Date(curve[0].ts)) >= 7 * 86400e3 ? (mean / sd) * Math.sqrt(525600 / Math.max(1, (new Date(curve.at(-1).ts) - new Date(curve[0].ts)) / 60000 / rets.length)) : null,
       maxDD,
     },
   };
