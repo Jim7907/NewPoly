@@ -6,7 +6,7 @@ services:
     container_name: decision-engine
     restart: unless-stopped
     ports:
-      - "3003:3003"
+      - "${PORT:-3003}:3003"
     env_file:
       - .env            # created by deploy.sh (DASHBOARD_PASSWORD, optional ANTHROPIC_API_KEY, ...)
     environment:
