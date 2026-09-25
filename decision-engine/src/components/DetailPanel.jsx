@@ -123,6 +123,20 @@ function LLMBox({ llm }) {
   );
 }
 
+// v2 model provenance / meta-label / relative rank (all optional).
+function MetaChip({ meta }) {
+  const m = obj(meta); const p = num(m.pSuccess ?? m.p); const t = num(m.threshold);
+  if (p == null && t == null) return null;
+  const pass = p != null && (t == null || p >= t);
+  const col = p == null ? C.dim : pass ? C.up : C.amber;
+  return <span title="meta-labeler: P(this call succeeds net of costs) vs its gating threshold" style={{ display: "inline-block", color: col, border: `1px solid ${col}88`, background: pass ? C.upBg : C.inset, borderRadius: 3, padding: "1px 6px", fontSize: 9, fontWeight: 800, fontFamily: MONO, letterSpacing: 0.5, whiteSpace: "nowrap" }}>
+    {pass ? "✓" : "✗"} META-LABEL {pct(p, 0)}{t != null ? ` ${p != null && p >= t ? "≥" : "<"} ${pct(t, 0)}` : ""}
+  </span>;
+}
+const modelTag = (m) => { const o = obj(m); if (!o.kind && o.version == null) return null; const v = o.version == null ? "" : /^v/i.test(String(o.version)) ? ` ${o.version}` : ` v${o.version}`; return `P(up) ← ${o.kind || "model"}${v}`; };
+const relSub = (r) => { const o = obj(r); const rank = o.rank; const n = num(o.nPeers ?? o.n ?? o.of); const b = o.benchmark ? String(o.benchmark).split(":").pop() : null;
+  return rank == null ? (b ? `vs ${b}` : null) : `rank #${rank}${n != null ? `/${n}` : ""}${b ? ` vs ${b}` : ""}`; };
+
 export default function DetailPanel({ assetId, seed, provided, live, tick, minConf, onClose, overlay }) {
   const [full, setFull] = useState(provided || null);
   const [err, setErr] = useState(null);
@@ -214,6 +228,8 @@ export default function DetailPanel({ assetId, seed, provided, live, tick, minCo
                 <Tag>{d.assetId || assetId}</Tag><Tag>{d.assetClass || "—"}</Tag><Tag>{d.horizon || "—"} · {d.horizonLabel || "—"}</Tag>
                 {rl && <Tag color={C.blue}>regime {rl}</Tag>}
                 {d.regime?.hmmState != null && <Tag>HMM {String(d.regime.hmmState)}</Tag>}
+                {modelTag(d.model) && <Tag color={d.model.kind === "stacker" ? C.violet : C.sub} title="which model produced P(up)">{modelTag(d.model)}</Tag>}
+                {d.meta && typeof d.meta === "object" && <MetaChip meta={d.meta} />}
                 <Tag color={C.dim}>{dt(d.ts)} · {ago(d.ts)}</Tag>
               </div>
             </div>
@@ -234,6 +250,7 @@ export default function DetailPanel({ assetId, seed, provided, live, tick, minCo
             <Stat label="coverage" value={pct(d.coverage, 0)} />
             <Stat label="edge" value={pct(d.edge, 1)} />
             <Stat label="E[return]" value={spct(d.expectedReturn, 2)} color={colorSign(d.expectedReturn)} sub="fee-aware" />
+            {d.relative && typeof d.relative === "object" && <Stat label="P(outperform)" value={pct(d.relative.pOutperform, 1)} color={num(d.relative.pOutperform) == null ? C.text : d.relative.pOutperform >= 0.5 ? C.up : C.down} sub={relSub(d.relative)} title="cross-sectional: P(excess return vs benchmark > 0)" />}
           </div>
           {!act && d.abstainReason && <div style={{ marginTop: 10, padding: "6px 10px", border: `1px dashed ${C.borderHi}`, borderRadius: 6, fontFamily: MONO, fontSize: 10.5, color: C.sub }}>ABSTAIN → {d.abstainReason}</div>}
           {d.summary && <p style={{ margin: "10px 0 0", fontSize: 12, lineHeight: 1.55, color: C.text }}>{d.summary}</p>}

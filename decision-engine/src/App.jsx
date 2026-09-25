@@ -6,6 +6,8 @@ import DetailPanel from "./components/DetailPanel.jsx";
 import PortfolioTab from "./components/PortfolioTab.jsx";
 import PerformanceTab from "./components/PerformanceTab.jsx";
 import BacktestTab from "./components/BacktestTab.jsx";
+import RankingsTab from "./components/RankingsTab.jsx";
+import LabTab from "./components/LabTab.jsx";
 
 // ─── Settings normalization (server may store strings) ───────────────────────
 const toBool = (v) => v === true || v === "true" || v === 1 || v === "1";
@@ -42,7 +44,7 @@ function useEngineSocket(handlers) {
   return state;
 }
 
-const TABS = [["decisions", "DECISIONS"], ["portfolio", "PORTFOLIO"], ["performance", "PERFORMANCE"], ["backtest", "BACKTEST"]];
+const TABS = [["decisions", "DECISIONS"], ["rankings", "RANKINGS"], ["portfolio", "PORTFOLIO"], ["performance", "PERFORMANCE"], ["backtest", "BACKTEST"], ["lab", "LAB"]];
 
 function AnalyzeBox({ onResult, compact }) {
   const [sym, setSym] = useState("");
@@ -206,6 +208,8 @@ export default function App() {
           {tab === "portfolio" && <PortfolioTab ticks={ticks} refreshKey={portfolioKey} />}
           {tab === "performance" && <PerformanceTab refreshKey={0} />}
           {tab === "backtest" && <BacktestTab decisions={decisions} defaultHorizon={settings.horizon} />}
+          {tab === "rankings" && <RankingsTab defaultHorizon={settings.horizon} decisions={decisions} onSelect={(id) => { setTab("decisions"); setSelected({ id }); }} onOpenLab={() => setTab("lab")} />}
+          {tab === "lab" && <LabTab defaultHorizon={settings.horizon} />}
         </ErrorBoundary>
         {!split && tab === "decisions" && detail}
       </main>
