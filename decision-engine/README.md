@@ -98,14 +98,20 @@ npm run analyze -- BTC NVDA   # one-shot decisions in the terminal
 npm run backtest -- --symbol BTC --class crypto --horizon swing
 ```
 
-## Deploy to a VPS (gives you a dashboard URL)
+## Deploy to a VPS (your own dashboard URL)
 
-On the VPS (Docker recommended):
+On the VPS (Ubuntu/Debian; installs Docker if missing):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Jim7907/NewPoly/claude/ai-trading-decision-engine-kksxds/decision-engine/deploy.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Jim7907/NewPoly/claude/ai-trading-decision-engine-kksxds/decision-engine/deploy.sh | ANTHROPIC_API_KEY=sk-ant-... bash
 ```
-Then open `http://<vps-ip>:3003` (open port 3003 in the firewall, and ideally put it behind
-nginx/Caddy with TLS). Data persists in the `decision_engine_data` Docker volume. Re-run the script to update.
+(`ANTHROPIC_API_KEY` is optional; it enables the Claude analyst.) The script clones or updates the repo and creates
+`decision-engine/.env` with a generated dashboard password. It then builds and starts the container, opens the
+port in ufw, and prints the URL and login, e.g. `http://<vps-ip>:3003` with `admin / <password>`.
+- **Security:** the dashboard is protected by HTTP Basic auth. For TLS, put Caddy or nginx in front,
+  e.g. `caddy reverse-proxy --from your.domain --to :3003`.
+- **Data:** everything persists in the `decision_engine_data` Docker volume, including the DB, the research
+  datasets and the model registry.
+- **Operations:** re-run the script to update. `docker compose logs -f` tails the logs.
 
 ## Horizons
 

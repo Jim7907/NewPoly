@@ -17,6 +17,9 @@ const app = express();
 const server = http.createServer(app);
 app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "256kb" }));
+const auth = require("./auth");
+app.use(auth.middleware);
+app.get("/api/health/ping", (req, res) => res.json({ ok: true }));   // unauthenticated liveness probe
 
 // ── Live state ──
 const latest = new Map();          // assetId -> full Decision
@@ -52,7 +55,7 @@ function startLoop(assets, everyMs) {
 }
 
 // ── WebSocket ──
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ server, path: "/ws", verifyClient: (info) => auth.verifyWs(info) });
 const clients = new Set();
 wss.on("connection", (ws) => {
   clients.add(ws);
