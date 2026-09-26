@@ -6,6 +6,7 @@
 # Optional (first run or any time):
 #   ANTHROPIC_API_KEY=sk-ant-...   enables the Claude news/fundamentals analyst
 #   DASHBOARD_USER / DASHBOARD_PASSWORD   dashboard login (a random password is generated if unset)
+#   IMPORT_STATE=1   restore the state exported from the Claude cloud session (branch engine-state)
 #   PORT=3003   BRANCH=...   DIR=$HOME/NewPoly
 set -euo pipefail
 
@@ -53,6 +54,24 @@ chmod 600 .env
 
 echo "==> Building + starting (Docker Compose)"
 $DOCKER compose up --build -d
+
+# ── Optional: restore the engine state exported from the Claude cloud session ──
+# IMPORT_STATE=1 pulls the `engine-state` branch (DB: positions, decisions, backtests, calibrators,
+# learned weights, model registry; research datasets) into the data volume. Runs once; set
+# IMPORT_STATE=force to overwrite again. The current volume contents are backed up first.
+if [ -n "${IMPORT_STATE:-}" ] && { [ ! -f .state-imported ] || [ "${IMPORT_STATE}" = "force" ]; }; then
+  echo "==> Importing engine state from branch ${STATE_BRANCH:-engine-state}"
+  TMP="$(mktemp -d)"
+  git -C "$DIR" fetch -q origin "${STATE_BRANCH:-engine-state}"
+  git -C "$DIR" archive "origin/${STATE_BRANCH:-engine-state}" data | tar -x -C "$TMP"
+  [ -f "$TMP/data/decision-engine.db" ] || { echo "!! no decision-engine.db in state branch"; exit 1; }
+  $DOCKER compose stop
+  mkdir -p backups && $DOCKER compose cp decision-engine:/app/data "backups/data-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+  $DOCKER compose cp "$TMP/data/." decision-engine:/app/data/
+  $DOCKER compose start
+  rm -rf "$TMP"; date -u +%FT%TZ > .state-imported
+  echo "==> State imported (previous volume contents backed up under decision-engine/backups/)"
+fi
 $DOCKER compose ps
 
 # Open the port if ufw is active.
