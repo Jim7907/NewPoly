@@ -1,0 +1,32 @@
+services:
+  decision-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: decision-engine
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3003}:3003"
+    env_file:
+      - .env            # created by deploy.sh (DASHBOARD_PASSWORD, optional ANTHROPIC_API_KEY, ...)
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - DB_PATH=/app/data
+    volumes:
+      - decision_engine_data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3003/api/health/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  decision_engine_data:
+    driver: local
