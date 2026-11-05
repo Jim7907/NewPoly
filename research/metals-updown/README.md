@@ -89,6 +89,63 @@ Cheapest path: a paper-only adapter in crypto15m — discover via `series_id=129
 window-open), read `priceToBeat` from Gamma, fee `0.07`, and gate on real book depth. Let the
 CALIBRATION tab gather a few weeks of data before deciding anything.
 
+## Part 2: can a *taker* bot be profitable? (tick data, 2026-11-05)
+
+Market making was ruled out by preference, so this part looks only at strategies that buy at the
+ask and hold to settlement.
+
+### Who has made money (Data API v2, every fill, Oct 22 – Nov 5)
+
+20,758 taker fills, about $134k notional (`fetch_trades.py`, `flow.py`, `makers.py`):
+
+| | Taker net P&L (after fees) | Maker P&L (+20% rebate) |
+|---|---|---|
+| Gold, all fills | −$5,993 (−6.0%) | +$4,134 (+4.1%) |
+| Silver, all fills | −$136 | −$464 |
+| Silver, last 60 s | **+$1,019** | −$1,109 (−12.4%) |
+
+- About five wallets supply ~85% of liquidity, and the best of them earn +4–10%. Takers lose in aggregate.
+- The profitable takers are few and fast: `ply-pm2` (+22.9%, buys in the last ~56 s) and a
+  wallet sweeping winners *after* the close (+11.9%). In late October, post-close silver asks
+  below $1 paid +12.7%.
+
+### Settlement feed is available
+
+Polymarket's RTDS socket (`wss://ws-live-data.polymarket.com`, topic `equity_prices`,
+symbols `xauusd` / `xagusd`, **one subscription per connection**) streams the Chainlink price
+once per second with no auth (the PolyBolt successor requires CLOB API keys). It matches Gamma's
+`priceToBeat`/`finalPrice` to within 0–3 s, i.e. ~0–3 bps at the boundary. `priceToBeat` is
+published in event metadata shortly after a window opens.
+
+### Tick recording: 12:29–14:09 UTC, 6 resolved windows per metal (`recorder/`, `analyze_ticks.py`)
+
+- **Quotes react fast.** After a ≥3σ one-second Chainlink move, Polymarket's best prices change
+  within 1 s 75–88% of the time and within 3 s 92–95% of the time (median 0.1–0.3 s). A bot on a
+  1-second feed is usually behind the market makers, who appear to read Chainlink directly.
+- **No post-close sweep.** Within ~2–5 s of the close the book is in a settled state (winner bid
+  0.99–0.999 in size with no asks, loser offered at 0.001–0.01). No winning-side asks below 0.999
+  were seen after any recorded close.
+- **Late-window mispricing disappears once vol is calibrated.** With the raw 1-second volatility
+  estimate, favorites-only signals (model p ≥ 0.8, edge ≥ 2¢ after fee) fired in 8 windows and all
+  won (+17.5%). But that estimator runs 15–20% below realized 15m vol (gold 11.1 vs 13.6 bps,
+  silver 24.1 vs 27.5 bps). With σ scaled ×1.25 to de-bias it, only one silver window keeps a
+  signal ($42 available) and gold has essentially none. The "edge" was model overconfidence.
+- With the exact feed, the model's Brier score roughly matches the market mid (better in 8 of 12
+  windows), so the market prices these windows about as well as a correct model does.
+
+### Verdict
+
+No profitable taker strategy found. The market is priced close to the Chainlink-implied
+probability and re-prices within a second; the post-close and late-minute edges that existed in
+late October have been competed away by bots with faster access to Chainlink. Beating them would
+take sub-second Chainlink Data Streams access (paid) and colocation, against incumbents who
+already have it, for a prize pool of perhaps $100–300/day across all participants.
+
+What could still change this, cheaply: run `recorder/` on the VPS for 1–2 weeks (~1,300 windows
+per metal) and re-run `analyze_ticks.py --min-p 0.8 --sigma-mult 1.25`. Look specifically at
+macro-release minutes (8:30 / 10:00 ET) and the Asian session, where quotes may be slower.
+Build a paper taker bot only if that shows a positive, stable edge.
+
 ## Reproduce
 
 ```bash
@@ -98,4 +155,9 @@ python3 ../scripts/fetch_hist.py  # Polymarket price history per window
 python3 ../scripts/calib.py       # market calibration
 python3 ../scripts/lead2.py       # lead model vs market
 python3 ../scripts/livebook.py    # live book sampler for the current window
+python3 ../scripts/fetch_trades.py && python3 ../scripts/flow.py   # taker/maker P&L from all fills
+
+# tick recorder (Node >= 18): records until stopped, or RUN_SECONDS
+cd ../recorder && npm install && DATA_DIR=./data node record.js
+python3 ../scripts/analyze_ticks.py ./data --margin 0.02 --min-p 0.8 --sigma-mult 1.25
 ```

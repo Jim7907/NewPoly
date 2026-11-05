@@ -7,7 +7,7 @@ For every recorded window, second by second:
   * "Take" opportunities: model prob - ask - taker fee >= margin, with the $ size actually on the ask.
 Also reports: Chainlink(RTDS) vs Gamma priceToBeat/finalPrice agreement, and quote reaction lag.
 
-usage: python3 analyze_ticks.py <recorder data dir> [--margin 0.03] [--min-p 0.8] [--basis-bps 2.5]
+usage: python3 analyze_ticks.py <recorder data dir> [--margin 0.03] [--min-p 0.8] [--basis-bps 2.5] [--sigma-mult 1.25]
 """
 import bisect
 import collections
@@ -134,9 +134,10 @@ def main():
 
     # 2) Per-second take opportunities vs executable asks
     # RTDS matches settlement only to within ~0-3 s, i.e. a few bps at the boundary: model that as basis noise.
+    sig_mult = float(sys.argv[sys.argv.index("--sigma-mult") + 1]) if "--sigma-mult" in sys.argv else 1.0
     min_p = float(sys.argv[sys.argv.index("--min-p") + 1]) if "--min-p" in sys.argv else 0.0
     basis = float(sys.argv[sys.argv.index("--basis-bps") + 1]) / 1e4 if "--basis-bps" in sys.argv else 2.5e-4
-    print(f"\n== Take opportunities (model - ask - fee >= {margin:.2f}, basis noise {basis * 1e4:.1f} bps, model p >= {min_p:.2f}), by seconds-to-close")
+    print(f"\n== Take opportunities (model - ask - fee >= {margin:.2f}, basis noise {basis * 1e4:.1f} bps, model p >= {min_p:.2f}, sigma x{sig_mult:.2f}), by seconds-to-close")
     buckets = collections.defaultdict(lambda: [0, 0.0, 0.0, set()])   # n_sec, $avail, pnl_if_filled, windows
     for (a, t0), w in sorted(wins.items()):
         if (a, t0) not in resolved or (a, t0) not in ptbs:
@@ -153,6 +154,7 @@ def main():
                 S, sig = price_at(s, t), sigma_at(s, t)
                 if S is None or not sig:
                     continue
+                sig *= sig_mult   # the 1s estimator runs ~15-20% below realized 15m vol; scale up to de-bias
                 pU = Phi(math.log(S / ptb) / math.sqrt(sig * sig * tau + basis * basis))
             else:                                          # outcome fixed; only the basis is unknown
                 if s_close is None:
