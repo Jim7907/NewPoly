@@ -1,0 +1,9 @@
+{
+  "name": "metals-updown-recorder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tick recorder: Chainlink XAU/XAG (Polymarket RTDS), Hyperliquid xyz:GOLD/SILVER, Polymarket CLOB books for gold/silver 15m Up-or-Down windows",
+  "main": "record.js",
+  "scripts": { "start": "node record.js" },
+  "dependencies": { "ws": "8.18.0" }
+}
