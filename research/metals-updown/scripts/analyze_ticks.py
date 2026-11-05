@@ -7,7 +7,7 @@ For every recorded window, second by second:
   * "Take" opportunities: model prob - ask - taker fee >= margin, with the $ size actually on the ask.
 Also reports: Chainlink(RTDS) vs Gamma priceToBeat/finalPrice agreement, and quote reaction lag.
 
-usage: python3 analyze_ticks.py <recorder data dir> [--margin 0.03]
+usage: python3 analyze_ticks.py <recorder data dir> [--margin 0.03] [--min-p 0.8] [--basis-bps 2.5]
 """
 import bisect
 import collections
@@ -114,7 +114,7 @@ def main():
 
     # 1) RTDS vs Gamma settlement values
     print("\n== RTDS Chainlink vs Gamma priceToBeat / finalPrice")
-    resolved = {}
+    resolved, ptbs = {}, {}
     for (a, t0), w in sorted(wins.items()):
         meta, op, closed = gamma_meta(w["slug"])
         s = cl.get(sym[a], [])
@@ -129,34 +129,45 @@ def main():
         print(line)
         if op and closed:
             resolved[(a, t0)] = 1 if op[0] == "1" else 0
+        if ptb is not None:
+            ptbs[(a, t0)] = float(ptb)
 
     # 2) Per-second take opportunities vs executable asks
-    print(f"\n== Take opportunities (model - ask - fee >= {margin:.2f}), by seconds-to-close")
+    # RTDS matches settlement only to within ~0-3 s, i.e. a few bps at the boundary: model that as basis noise.
+    min_p = float(sys.argv[sys.argv.index("--min-p") + 1]) if "--min-p" in sys.argv else 0.0
+    basis = float(sys.argv[sys.argv.index("--basis-bps") + 1]) / 1e4 if "--basis-bps" in sys.argv else 2.5e-4
+    print(f"\n== Take opportunities (model - ask - fee >= {margin:.2f}, basis noise {basis * 1e4:.1f} bps, model p >= {min_p:.2f}), by seconds-to-close")
     buckets = collections.defaultdict(lambda: [0, 0.0, 0.0, set()])   # n_sec, $avail, pnl_if_filled, windows
     for (a, t0), w in sorted(wins.items()):
-        if (a, t0) not in resolved or not w.get("meta") or "priceToBeat" not in w["meta"]:
+        if (a, t0) not in resolved or (a, t0) not in ptbs:
             continue
         s = cl[sym[a]]
-        ptb = float(w["meta"]["priceToBeat"])
+        ptb = ptbs[(a, t0)]
+        s_close = price_at(s, t0 + 900)
         up_book, dn_book = Book(ev.get(w["up"], [])), Book(ev.get(w["down"], []))
         up_won = resolved[(a, t0)]
         taken = set()
-        for t in range(t0 + 60, t0 + 900):
+        for t in range(t0 + 60, t0 + 960):                # include the first minute after close
             tau = t0 + 900 - t
-            S, sig = price_at(s, t), sigma_at(s, t)
-            if S is None or not sig:
-                continue
-            pU = Phi(math.log(S / ptb) / (sig * math.sqrt(tau)))
+            if tau > 0:
+                S, sig = price_at(s, t), sigma_at(s, t)
+                if S is None or not sig:
+                    continue
+                pU = Phi(math.log(S / ptb) / math.sqrt(sig * sig * tau + basis * basis))
+            else:                                          # outcome fixed; only the basis is unknown
+                if s_close is None:
+                    continue
+                pU = Phi(math.log(s_close / ptb) / basis)
             for side, book, p, won in (("UP", up_book, pU, up_won), ("DOWN", dn_book, 1 - pU, 1 - up_won)):
                 snap = book.at(t * 1000)
                 if not snap or snap[3] is None or not (0 < snap[3] < 1):
                     continue
                 ask, asz = snap[3], snap[4]
-                if p - ask - FEE * ask * (1 - ask) >= margin and (a, t0, side, ask) not in taken:
+                if p >= min_p and p - ask - FEE * ask * (1 - ask) >= margin and (a, t0, side, ask) not in taken:
                     taken.add((a, t0, side, ask))       # count each resting ask level once
                     usd = ask * asz
                     pnl = asz * (won - ask) - asz * FEE * ask * (1 - ask)
-                    tb = "0-30s" if tau <= 30 else "30-60s" if tau <= 60 else "60-180s" if tau <= 180 else "180-420s" if tau <= 420 else "420s+"
+                    tb = "after-close" if tau <= 0 else "0-30s" if tau <= 30 else "30-60s" if tau <= 60 else "60-180s" if tau <= 180 else "180-420s" if tau <= 420 else "420s+"
                     for k in ((a, tb), (a, "ALL")):
                         b = buckets[k]; b[0] += 1; b[1] += usd; b[2] += pnl; b[3].add(t0)
     for k in sorted(buckets):
