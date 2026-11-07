@@ -1,0 +1,51 @@
+services:
+  web:
+    build: .
+    container_name: lighter-dex
+    restart: unless-stopped
+    ports:
+      - "3003:80"
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+  # Telegram alerts API + bot (stays idle until TELEGRAM_BOT_TOKEN is set in .env).
+  alerts:
+    image: node:22-alpine
+    container_name: lighter-dex-alerts
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "server.js"]
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      - PORT=8080
+    volumes:
+      - ./alerts:/app:ro
+      - alerts_data:/data
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+  # HTTPS front (Let's Encrypt, automatic). Enabled by deploy.sh with `--profile https`.
+  # Mobile wallets need https; DOMAIN defaults to <vps-ip>.sslip.io (no DNS setup needed).
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: lighter-dex-caddy
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on: [web]
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  alerts_data:
+  caddy_data:
+  caddy_config:
