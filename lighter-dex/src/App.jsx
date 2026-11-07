@@ -63,7 +63,7 @@ export default function App() {
   const book = useOrderBook(market ? market.market_id : null);
 
   useEffect(() => {
-    if (market) document.title = `${Number(market.mark_price).toFixed(market.price_decimals)} ${market.symbol} · Lighter Trade`;
+    if (market) document.title = `${Number(market.mark_price).toFixed(market.price_decimals)} ${market.label} · Lighter Trade`;
   }, [market?.mark_price, market?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -83,6 +83,12 @@ export default function App() {
       </header>
 
       {marketsError && <div className="banner">Could not reach Lighter API: {marketsError.message}</div>}
+      {NETWORK.chainId !== 304 && markets.length > 0 && (
+        <div className="banner banner-info">
+          Testnet (fake money) — Lighter&apos;s testnet only lists {markets.length} markets. Mainnet has 200+ perps and spot pairs:
+          redeploy with <code>NETWORK=mainnet</code>.
+        </div>
+      )}
 
       <main className="grid" data-mtab={mobileTab}>
         <Chart market={market} indicators={indicators} />

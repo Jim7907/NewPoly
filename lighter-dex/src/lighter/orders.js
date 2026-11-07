@@ -27,7 +27,7 @@ export async function marketOrderPrice(market, isAsk, slippage) {
 export function validateSize(market, size, price) {
   const s = Number(size);
   if (!(s > 0)) return 'Enter a size';
-  if (s < Number(market.min_base_amount)) return `Min size is ${market.min_base_amount} ${market.symbol}`;
+  if (s < Number(market.min_base_amount)) return `Min size is ${market.min_base_amount} ${market.base ?? market.symbol}`;
   if (price && s * Number(price) < Number(market.min_quote_amount)) return `Min order value is $${Number(market.min_quote_amount)}`;
   return null;
 }

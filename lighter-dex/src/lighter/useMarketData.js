@@ -4,7 +4,7 @@ import * as api from './api.js';
 import { NETWORK } from './config.js';
 
 export function useMarkets() {
-  return useQuery({ queryKey: ['markets'], queryFn: api.getPerpMarkets, refetchInterval: 10000 });
+  return useQuery({ queryKey: ['markets'], queryFn: api.getMarkets, refetchInterval: 10000 });
 }
 
 export function useCandles(marketId, resolution) {

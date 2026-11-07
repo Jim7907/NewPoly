@@ -99,6 +99,31 @@ a { color: var(--accent); }
 .menu-error { color: var(--down); padding: 6px 10px; font-size: 12px; }
 
 .banner { background: var(--down-bg); color: var(--down); padding: 8px 16px; }
+.banner-info { background: var(--panel-2); color: var(--muted); font-size: 12px; }
+
+/* market picker */
+.market-select { cursor: pointer; display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.picker { width: min(720px, 100%); height: min(80vh, 760px); }
+.picker-search { flex: 1; margin-right: 8px; font-size: 16px; padding: 10px 12px; }
+.picker-tabs { padding: 10px 16px 6px; }
+.chip .count { opacity: 0.6; margin-left: 2px; }
+.picker-list { overflow-y: auto; flex: 1; padding: 0 8px 8px; }
+.picker-row {
+  display: grid; grid-template-columns: 28px minmax(0, 1.6fr) 1fr 0.8fr 0.9fr; align-items: center;
+  gap: 8px; padding: 8px; border-radius: 6px; font-size: 13px; cursor: pointer;
+}
+.picker-row:hover, .picker-row.current { background: var(--panel-2); }
+.picker-row > span:not(:first-child) { text-align: right; }
+.picker-head { position: sticky; top: 0; background: var(--panel); font-size: 11px; cursor: default; z-index: 1; }
+.picker-head:hover { background: var(--panel); }
+.picker-main { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.star { background: none; border: 0; cursor: pointer; color: var(--muted); font-size: 16px; padding: 0; }
+.star.on { color: #f5a524; }
+@media (max-width: 720px) {
+  .picker { height: 92vh; }
+  .picker-row { grid-template-columns: 28px minmax(0, 1.5fr) 1fr 0.8fr; }
+  .hide-sm { display: none; }
+}
 
 /* layout */
 .grid {

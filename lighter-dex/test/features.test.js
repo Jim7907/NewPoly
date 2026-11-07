@@ -168,3 +168,41 @@ test('liqWarnings respects distance and cooldown', () => {
   assert.equal(liqWarnings(alert, account, marks, { 'a1:0': 900 }, 1000).length, 0); // cooldown
   assert.equal(liqWarnings(alert, account, marks, { 'a1:0': 0 }, 2 * 3600e3).length, 1);
 });
+
+// ---------- markets ----------
+import { buildMarketList, filterMarkets } from '../src/lighter/markets.js';
+
+test('buildMarketList includes perps and spot, active only, normalized', () => {
+  const list = buildMarketList({
+    order_book_details: [
+      { symbol: 'BTC', market_id: 1, market_type: 'perp', status: 'active', daily_quote_token_volume: 5, mark_price: '100', price_decimals: 1, size_decimals: 5 },
+      { symbol: 'ETH', market_id: 0, market_type: 'perp', status: 'active', daily_quote_token_volume: 9, mark_price: '10', price_decimals: 2, size_decimals: 4 },
+      { symbol: 'OLD', market_id: 9, market_type: 'perp', status: 'inactive' },
+    ],
+    spot_order_book_details: [
+      { symbol: 'ETH/USDC', market_id: 2048, market_type: 'spot', status: 'active', last_trade_price: 2240.5, supported_price_decimals: 2, supported_size_decimals: 4 },
+    ],
+  });
+  assert.deepEqual(list.map((m) => m.label), ['ETH-PERP', 'BTC-PERP', 'ETH/USDC']);
+  const spot = list[2];
+  assert.equal(spot.kind, 'spot');
+  assert.equal(spot.base, 'ETH');
+  assert.equal(spot.quote, 'USDC');
+  assert.equal(spot.mark_price, '2240.5');
+  assert.equal(spot.price_decimals, 2);
+  assert.equal(spot.size_decimals, 4);
+});
+
+test('filterMarkets: search, kind and favorites', () => {
+  const list = buildMarketList({
+    order_book_details: [
+      { symbol: 'SOL', market_id: 2, market_type: 'perp', status: 'active' },
+      { symbol: 'ETHFI', market_id: 3, market_type: 'perp', status: 'active' },
+      { symbol: 'ETH', market_id: 0, market_type: 'perp', status: 'active' },
+    ],
+    spot_order_book_details: [{ symbol: 'ETH/USDC', market_id: 2048, market_type: 'spot', status: 'active' }],
+  });
+  assert.deepEqual(filterMarkets(list, { query: 'eth' }).map((m) => m.label), ['ETH-PERP', 'ETH/USDC', 'ETHFI-PERP']);
+  assert.deepEqual(filterMarkets(list, { kind: 'spot' }).map((m) => m.label), ['ETH/USDC']);
+  assert.deepEqual(filterMarkets(list, { kind: 'fav', favorites: [2] }).map((m) => m.label), ['SOL-PERP']);
+});

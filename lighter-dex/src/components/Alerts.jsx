@@ -100,7 +100,7 @@ export default function Alerts({ lighter, markets }) {
           <div className="section-title">Price alert</div>
           <div className="row-gap">
             <select className="input" value={marketId} onChange={(e) => setMarketId(e.target.value)}>
-              {markets.map((m) => <option key={m.market_id} value={m.market_id}>{m.symbol}</option>)}
+              {markets.map((m) => <option key={m.market_id} value={m.market_id}>{m.label}</option>)}
             </select>
             <select className="input" value={op} onChange={(e) => setOp(e.target.value)}>
               <option value="above">rises to ≥</option>

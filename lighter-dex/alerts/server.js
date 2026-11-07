@@ -106,7 +106,10 @@ async function lighterGet(path) {
 async function check() {
   if (!db.alerts.length) return;
   const d = await lighterGet('orderBookDetails');
-  const marks = new Map((d.order_book_details ?? []).map((m) => [m.market_id, Number(m.mark_price)]));
+  const marks = new Map([
+    ...(d.order_book_details ?? []).map((m) => [m.market_id, Number(m.mark_price)]),
+    ...(d.spot_order_book_details ?? []).map((m) => [m.market_id, Number(m.last_trade_price)]), // spot: last price
+  ]);
   const now = Date.now();
   let changed = false;
 

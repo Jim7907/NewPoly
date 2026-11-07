@@ -59,7 +59,7 @@ export default function AutoTrader({ bot, lighter, markets, indicators }) {
             <label className="field">
               <span>Market</span>
               <select className="input" value={cfg.marketId} disabled={running} onChange={(e) => setConfig({ marketId: Number(e.target.value) })}>
-                {markets.map((m) => <option key={m.market_id} value={m.market_id}>{m.symbol}</option>)}
+                {markets.filter((m) => m.kind === 'perp').map((m) => <option key={m.market_id} value={m.market_id}>{m.label}</option>)}
               </select>
             </label>
             <label className="field">

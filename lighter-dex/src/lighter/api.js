@@ -2,6 +2,7 @@
 // browser talks to it directly — no backend needed.
 // Reference: https://apidocs.lighter.xyz  (OpenAPI: elliottech/lighter-python/openapi.json)
 import { NETWORK } from './config.js';
+import { buildMarketList } from './markets.js';
 
 export class LighterApiError extends Error {
   constructor(message, code) {
@@ -36,11 +37,9 @@ async function request(path, { params, method = 'GET', form, headers } = {}) {
 
 // ---- market data (public) ----
 
-export async function getPerpMarkets() {
-  const d = await request('orderBookDetails');
-  return (d.order_book_details ?? [])
-    .filter((m) => m.market_type === 'perp' && m.status === 'active')
-    .sort((a, b) => Number(b.daily_quote_token_volume) - Number(a.daily_quote_token_volume));
+/** Every active market: perps and spot (see markets.js for the normalized shape). */
+export async function getMarkets() {
+  return buildMarketList(await request('orderBookDetails'));
 }
 
 export async function getMarket(marketId) {

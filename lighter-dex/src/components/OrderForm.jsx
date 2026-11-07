@@ -55,20 +55,36 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
 
   if (!market) return <div className="panel form-panel" />;
 
-  const available = Number(lighter.account?.available_balance ?? 0);
+  const isSpot = market.kind === 'spot';
+  const assetFree = (sym) => {
+    const a = lighter.account?.assets?.find((x) => x.symbol === sym);
+    return a ? Math.max(0, Number(a.balance) - Number(a.locked_balance || 0)) : 0;
+  };
+  // Perps trade on margin; spot spends your spot USDC (buy) or the coin itself (sell).
+  const available = isSpot
+    ? assetFree(isAsk ? market.base : market.quote)
+    : Number(lighter.account?.available_balance ?? 0);
+  const availableLabel = isSpot
+    ? `${fmtNum(available, isAsk ? market.size_decimals : 2)} ${isAsk ? market.base : market.quote}`
+    : fmtUsd(available);
   const notional = Number(size) * refPrice;
   const margin = notional / leverage;
-  const sizeError = size ? validateSize(market, size, refPrice) : null;
+  const spotError = isSpot && lighter.account && Number(size) > 0
+    ? (isAsk ? Number(size) > available && `Not enough ${market.base} (you have ${fmtNum(available, market.size_decimals)})`
+      : notional > available && `Not enough ${market.quote} in your spot balance`)
+    : null;
+  const sizeError = (size ? validateSize(market, size, refPrice) : null) || spotError || null;
   const maxLev = maxLeverage(market);
   const isLong = !isAsk;
-  const tpslError = tpslOn && (tp || sl) ? validateTpSl({ isLong, refPrice, tp, sl }) : null;
+  const tpslError = !isSpot && tpslOn && (tp || sl) ? validateTpSl({ isLong, refPrice, tp, sl }) : null;
   const pctFrom = (p) => (Number(p) > 0 && refPrice ? ((Number(p) / refPrice - 1) * 100 * (isLong ? 1 : -1)) : null);
   const tpPnl = Number(tp) > 0 && Number(size) > 0 ? pnlAt({ isLong, entryPrice: refPrice, exitPrice: tp, size }) : null;
   const slPnl = Number(sl) > 0 && Number(size) > 0 ? pnlAt({ isLong, entryPrice: refPrice, exitPrice: sl, size }) : null;
 
   const setPct = (pct) => {
     if (!refPrice || !available) return;
-    setSize(roundTo((available * leverage * pct) / refPrice, market.size_decimals, 'down'));
+    const amount = isSpot ? (isAsk ? available * pct : (available * pct) / refPrice) : (available * leverage * pct) / refPrice;
+    setSize(roundTo(amount, market.size_decimals, 'down'));
   };
 
   const submit = async () => {
@@ -81,8 +97,8 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
       const px = kind === 'market'
         ? await marketOrderPrice(market, isAsk, Number(slippagePct) / 100)
         : price;
-      const entryParams = { isAsk, size, price: px, kind, reduceOnly, postOnly };
-      const withTpSl = tpslOn && (tp || sl);
+      const entryParams = { isAsk, size, price: px, kind, reduceOnly: !isSpot && reduceOnly, postOnly };
+      const withTpSl = !isSpot && tpslOn && (tp || sl);
       if (withTpSl) {
         const err2 = validateTpSl({ isLong, refPrice, tp, sl });
         if (err2) throw new Error(err2);
@@ -92,7 +108,7 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
       }
       setMsg({
         type: 'ok',
-        text: `${side === 'buy' ? 'Buy' : 'Sell'} ${size} ${market.symbol} submitted${withTpSl ? ' with TP/SL' : ''}`,
+        text: `${side === 'buy' ? 'Buy' : 'Sell'} ${size} ${market.base} submitted${withTpSl ? ' with TP/SL' : ''}`,
       });
       setSize('');
       setTp('');
@@ -120,8 +136,8 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
   return (
     <div className="panel form-panel">
       <div className="seg">
-        <button className={`seg-btn buy ${side === 'buy' ? 'active' : ''}`} onClick={() => setSide('buy')}>Buy / Long</button>
-        <button className={`seg-btn sell ${side === 'sell' ? 'active' : ''}`} onClick={() => setSide('sell')}>Sell / Short</button>
+        <button className={`seg-btn buy ${side === 'buy' ? 'active' : ''}`} onClick={() => setSide('buy')}>{isSpot ? 'Buy' : 'Buy / Long'}</button>
+        <button className={`seg-btn sell ${side === 'sell' ? 'active' : ''}`} onClick={() => setSide('sell')}>{isSpot ? 'Sell' : 'Sell / Short'}</button>
       </div>
 
       <div className="tabs">
@@ -134,14 +150,14 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
 
       {kind === 'limit' && (
         <label className="field">
-          <span>Price (USD)</span>
+          <span>Price ({market.quote === 'USD' ? 'USD' : market.quote})</span>
           <input inputMode="decimal" value={price} placeholder={fmtNum(refPrice, market.price_decimals)}
             onChange={(e) => setPrice(e.target.value)} />
         </label>
       )}
 
       <label className="field">
-        <span>Size ({market.symbol})</span>
+        <span>Size ({market.base})</span>
         <input inputMode="decimal" value={size} placeholder={`min ${market.min_base_amount}`}
           onChange={(e) => setSize(e.target.value)} />
       </label>
@@ -151,17 +167,17 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
         ))}
       </div>
 
-      <div className="field">
+      {!isSpot && <div className="field">
         <span>Leverage: <strong>{leverage}x</strong> {leverage !== currentLev && <em className="muted">(current {currentLev}x)</em>}</span>
         <div className="lev-row">
           <input type="range" min={1} max={maxLev} value={leverage} onChange={(e) => setLeverage(Number(e.target.value))} />
           <button className="chip" disabled={leverage === currentLev || lighter.status !== 'ready' || submitting} onClick={applyLeverage}>Set</button>
         </div>
-      </div>
+      </div>}
 
       <div className="checks">
-        <label><input type="checkbox" checked={tpslOn} onChange={(e) => setTpslOn(e.target.checked)} /> TP/SL</label>
-        <label><input type="checkbox" checked={reduceOnly} onChange={(e) => setReduceOnly(e.target.checked)} /> Reduce only</label>
+        {!isSpot && <label><input type="checkbox" checked={tpslOn} onChange={(e) => setTpslOn(e.target.checked)} /> TP/SL</label>}
+        {!isSpot && <label><input type="checkbox" checked={reduceOnly} onChange={(e) => setReduceOnly(e.target.checked)} /> Reduce only</label>}
         {kind === 'limit' && (
           <label><input type="checkbox" checked={postOnly} onChange={(e) => setPostOnly(e.target.checked)} /> Post only</label>
         )}
@@ -172,7 +188,7 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
         )}
       </div>
 
-      {tpslOn && (
+      {tpslOn && !isSpot && (
         <div className="tpsl-grid">
           <label className="field">
             <span>Take profit {pctFrom(tp) !== null && <em className="up">+{pctFrom(tp).toFixed(2)}%</em>}</span>
@@ -189,8 +205,8 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
 
       <dl className="summary">
         <dt>Order value</dt><dd>{notional ? fmtUsd(notional) : '—'}</dd>
-        <dt>Margin required</dt><dd>{notional ? fmtUsd(margin) : '—'}</dd>
-        <dt>Available</dt><dd>{lighter.account ? fmtUsd(available) : '—'}</dd>
+        {!isSpot && <><dt>Margin required</dt><dd>{notional ? fmtUsd(margin) : '—'}</dd></>}
+        <dt>Available{isSpot ? ' (spot)' : ''}</dt><dd>{lighter.account ? availableLabel : '—'}</dd>
         <dt>Fees (taker / maker)</dt>
         <dd>
           {(Number(market.taker_fee)).toFixed(4)}% / {(Number(market.maker_fee)).toFixed(4)}%
@@ -201,11 +217,17 @@ export default function OrderForm({ market, book, lighter, presetPrice, sideRequ
       <ActionButton
         isConnected={isConnected}
         lighter={lighter}
-        disabled={submitting || !!sizeError || !!tpslError}
-        label={submitting ? 'Submitting…' : `${side === 'buy' ? 'Buy' : 'Sell'} ${market.symbol}`}
+        disabled={submitting || !!sizeError || (!isSpot && !!tpslError)}
+        label={submitting ? 'Submitting…' : `${side === 'buy' ? 'Buy' : 'Sell'} ${market.base}`}
         side={side}
         onSubmit={submit}
       />
+
+      {isSpot && (
+        <p className="muted small">
+          Spot uses your spot {market.quote} balance, separate from perp collateral. Move funds between them on Lighter.
+        </p>
+      )}
 
       {(sizeError || tpslError || msg || lighter.error) && (
         <div className={`msg ${msg?.type === 'ok' && !sizeError && !tpslError ? 'ok' : 'error'}`}>

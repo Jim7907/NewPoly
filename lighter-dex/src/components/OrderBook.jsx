@@ -38,7 +38,7 @@ export default function OrderBook({ market, book, onPrice }) {
       </div>
       <div className="book-cols muted">
         <span>Price</span>
-        <span>Size ({market.symbol})</span>
+        <span>Size ({market.base ?? market.symbol})</span>
         <span>Total</span>
       </div>
       <div className="book-side">{asks.map((l) => <Row key={`a${l.price}`} l={l} side="ask" />)}</div>

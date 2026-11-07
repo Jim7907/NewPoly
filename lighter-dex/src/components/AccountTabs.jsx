@@ -221,6 +221,23 @@ function AccountSummary({ lighter, acct }) {
         <dt>Initial margin used</dt><dd>{fmtUsd(acct.cross_initial_margin_requirement)}</dd>
         <dt>Maintenance margin</dt><dd>{fmtUsd(acct.cross_maintenance_margin_requirement)}</dd>
       </dl>
+      {(acct.assets ?? []).some((a) => Number(a.balance) > 0) && (
+        <div>
+          <div className="section-title">Spot balances</div>
+          <Table
+            head={['Asset', 'Balance', 'In orders', 'Free']}
+            empty=""
+            rows={acct.assets
+              .filter((a) => Number(a.balance) > 0)
+              .map((a) => [
+                <strong>{a.symbol}</strong>,
+                fmtNum(a.balance, a.symbol === 'USDC' ? 2 : 6),
+                fmtNum(a.locked_balance, a.symbol === 'USDC' ? 2 : 6),
+                fmtNum(Number(a.balance) - Number(a.locked_balance || 0), a.symbol === 'USDC' ? 2 : 6),
+              ])}
+          />
+        </div>
+      )}
       {INTEGRATOR && e && (
         <div>
           <div className="section-title">This app's fee earnings (all time)</div>
