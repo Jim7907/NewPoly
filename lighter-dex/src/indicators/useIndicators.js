@@ -5,7 +5,10 @@ import { pineMeta } from './pine/runtime.js';
 import { looksLikePine } from './pine/parser.js';
 
 const KEY = 'lighter-dex:indicators:v1';
-const MAX_CODE = 30000;
+// Big TradingView scripts are often 50-200 KB. Scripts live in localStorage (~5 MB per site),
+// so this only guards against pasting something absurd.
+export const MAX_CODE = 512 * 1024;
+export const MAX_CODE_LABEL = '512 KB';
 
 function load() {
   try {
@@ -25,7 +28,7 @@ const BUILTIN_INFO = BUILTINS.map((b) => {
 
 /** Reads name, language and inputs of pasted script text. Throws on Pine syntax errors. */
 export function describeScript(code) {
-  if (code.length > MAX_CODE) throw new Error('Script is too long (30 KB max)');
+  if (code.length > MAX_CODE) throw new Error(`Script is too long (${MAX_CODE_LABEL} max)`);
   if (looksLikePine(code)) {
     const meta = pineMeta(code);
     return { lang: 'pine', name: meta.title, inputMeta: meta.inputs, defaults: defaultsOf(meta.inputs), isStrategy: meta.isStrategy };

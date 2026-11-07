@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { CUSTOM_TEMPLATE } from '../indicators/builtins.js';
-import { describeScript } from '../indicators/useIndicators.js';
+import { MAX_CODE, MAX_CODE_LABEL, describeScript } from '../indicators/useIndicators.js';
 
 const SOURCES = ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4', 'volume'];
 
@@ -34,7 +34,7 @@ export default function IndicatorsPanel({ indicators, errors, onClose }) {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
-    if (f.size > 30000) return setMsg({ ok: false, text: 'File too large (30 KB max)' });
+    if (f.size > MAX_CODE) return setMsg({ ok: false, text: `File too large (${MAX_CODE_LABEL} max)` });
     setEditing({ code: await f.text() });
   };
 

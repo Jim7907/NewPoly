@@ -217,3 +217,12 @@ test('named title= in indicator() and loop errors caught at import', () => {
   assert.equal(pineMeta('strategy(shorttitle="x", title="Long name")\nplot(close)').title, 'Long name');
   assert.throws(() => pineMeta('indicator("h")\nx = 0\nwhile true\n    x += 1\nplot(x)'), /Loop runs too many times/);
 });
+
+test('large Pine scripts (100 KB+) are accepted, absurd ones rejected', async () => {
+  const { describeScript, MAX_CODE } = await import('../src/indicators/useIndicators.js');
+  const body = Array.from({ length: 6000 }, (_, i) => `v${i} = ta.sma(close, ${(i % 50) + 1})`).join('\n');
+  const code = `//@version=5\nindicator("Big one", overlay=true)\n${body}\nplot(v0)\n`;
+  assert.ok(code.length > 100 * 1024, `test script is ${code.length} chars`);
+  assert.equal(describeScript(code).name, 'Big one');
+  assert.throws(() => describeScript('x'.repeat(MAX_CODE + 1)), /too long/);
+});
