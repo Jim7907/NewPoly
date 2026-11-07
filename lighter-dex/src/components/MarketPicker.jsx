@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { filterMarkets } from '../lighter/markets.js';
+import { CATEGORIES, filterMarkets } from '../lighter/markets.js';
 import { fmtCompact, fmtNum } from '../lighter/units.js';
 
 const FAV_KEY = 'lighter-dex:favorites';
@@ -22,12 +22,13 @@ export default function MarketPicker({ markets, market, onSelect }) {
   }, [open]);
 
   const list = useMemo(() => filterMarkets(markets, { query, kind, favorites: favs }), [markets, query, kind, favs]);
-  const counts = useMemo(() => ({
-    all: markets.length,
-    perp: markets.filter((m) => m.kind === 'perp').length,
-    spot: markets.filter((m) => m.kind === 'spot').length,
-    fav: favs.length,
-  }), [markets, favs]);
+  const tabs = useMemo(() => {
+    const count = (fn) => markets.filter(fn).length;
+    const t = [['all', 'All', markets.length], ['fav', '★ Favorites', favs.length]];
+    for (const [id, label] of CATEGORIES) t.push([id, label, count((m) => m.category === id)]);
+    t.push(['spot', 'Spot', count((m) => m.kind === 'spot')]);
+    return t.filter(([id, , n]) => n > 0 || id === 'all' || id === 'fav');
+  }, [markets, favs]);
 
   const toggleFav = (id) => setFavs((f) => (f.includes(id) ? f.filter((x) => x !== id) : [...f, id]));
   const pick = (id) => {
@@ -48,7 +49,7 @@ export default function MarketPicker({ markets, market, onSelect }) {
               <input
                 ref={inputRef}
                 className="input picker-search"
-                placeholder={`Search ${markets.length} markets (BTC, ETH, SOL…)`}
+                placeholder={`Search ${markets.length} markets (BTC, NVDA, XAU…)`}
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
@@ -62,9 +63,9 @@ export default function MarketPicker({ markets, market, onSelect }) {
               <button className="chip" onClick={() => setOpen(false)}>Close</button>
             </div>
             <div className="subtabs picker-tabs">
-              {[['all', 'All'], ['perp', 'Perps'], ['spot', 'Spot'], ['fav', '★ Favorites']].map(([k, label]) => (
+              {tabs.map(([k, label, n]) => (
                 <button key={k} className={`chip ${kind === k ? 'chip-active' : ''}`} onClick={() => setKind(k)}>
-                  {label} <span className="count">{counts[k]}</span>
+                  {label} <span className="count">{n}</span>
                 </button>
               ))}
             </div>
@@ -91,6 +92,7 @@ export default function MarketPicker({ markets, market, onSelect }) {
                       {m.kind === 'perp' && m.min_initial_margin_fraction && (
                         <span className="tag">{Math.floor(10000 / Number(m.min_initial_margin_fraction))}x</span>
                       )}
+                      {m.reduce_only && <span className="tag" title="Lighter allows closing positions only">reduce-only</span>}
                     </button>
                     <span onClick={() => pick(m.market_id)}>{fmtNum(m.mark_price, m.price_decimals)}</span>
                     <span onClick={() => pick(m.market_id)} className={ch >= 0 ? 'up' : 'down'}>{Number.isFinite(ch) ? `${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%` : '—'}</span>

@@ -206,3 +206,18 @@ test('filterMarkets: search, kind and favorites', () => {
   assert.deepEqual(filterMarkets(list, { kind: 'spot' }).map((m) => m.label), ['ETH/USDC']);
   assert.deepEqual(filterMarkets(list, { kind: 'fav', favorites: [2] }).map((m) => m.label), ['SOL-PERP']);
 });
+
+test('markets are grouped into asset categories', async () => {
+  const { categoryOf, buildMarketList, filterMarkets } = await import('../src/lighter/markets.js');
+  assert.equal(categoryOf('BTC'), 'crypto');
+  assert.equal(categoryOf('NVDA'), 'stocks');
+  assert.equal(categoryOf('ANTHROPIC'), 'preipo');
+  assert.equal(categoryOf('SPY'), 'indices');
+  assert.equal(categoryOf('rhQQQ/USDC'), 'indices');
+  assert.equal(categoryOf('EURUSD'), 'fx');
+  assert.equal(categoryOf('XAU'), 'commodities');
+  const mk = (id, symbol, extra = {}) => ({ market_id: id, symbol, status: 'active', market_type: 'perp', ...extra });
+  const list = buildMarketList({ order_book_details: [mk(1, 'BTC'), mk(2, 'NVDA', { market_config: { force_reduce_only: true } }), mk(3, 'XAU')] });
+  assert.deepEqual(filterMarkets(list, { kind: 'stocks' }).map((m) => m.label), ['NVDA-PERP']);
+  assert.equal(list.find((m) => m.symbol === 'NVDA').reduce_only, true);
+});
