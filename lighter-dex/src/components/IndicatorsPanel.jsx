@@ -59,8 +59,10 @@ export default function IndicatorsPanel({ indicators, errors, onClose }) {
           <div className="sheet-body">
             <p className="muted small">
               Paste a <b>Pine Script</b> indicator or strategy from TradingView (v4–v6). Supported: inputs, <code>ta.*</code>,
-              <code> math.*</code>, <code>plot</code>, <code>hline</code>, <code>if/for/switch</code>, <code>var</code>, functions.
-              Drawings (labels, lines, tables) are skipped; <code>request.security</code> isn&apos;t available.
+              <code> math.*</code>, <code>str.*</code>, <code>array&lt;T&gt;</code> and methods, <code>plot</code>, <code>hline</code>,
+              <code>if/for/for…in/switch</code>, <code>var</code>, functions.
+              Drawings (labels, lines, tables) are skipped; <code>request.security</code> isn&apos;t available and
+              lower-timeframe data is empty.
               For the auto-trader, use <code>strategy.entry/close</code> or <code>alertcondition(cond, &quot;Buy&quot;/&quot;Sell&quot;)</code>.
               Scripts run isolated from your wallet and keys.
             </p>

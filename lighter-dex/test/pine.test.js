@@ -226,3 +226,104 @@ test('large Pine scripts (100 KB+) are accepted, absurd ones rejected', async ()
   assert.equal(describeScript(code).name, 'Big one');
   assert.throws(() => describeScript('x'.repeat(MAX_CODE + 1)), /too long/);
 });
+
+// ---------- arrays, methods, for…in, generics (GS-CR-style scripts)
+const lastOf = (r, i = 0) => r.plots[i].values.at(-1);
+
+test('generic type declarations and array.new<T>()', () => {
+  const r = runPine(`//@version=6
+indicator("g")
+array<float> a = array.from(1.0, 2.0, 3.0)
+var array<int> counts = array.new<int>(2, 0)
+map<string, float> m = na
+counts.set(0, counts.get(0) + 1)
+plot(a.sum() + counts.get(0))`, C);
+  assert.equal(lastOf(r), 6 + 10); // var array keeps counting across all 10 bars
+});
+
+test('array functions and method calls, including on call results', () => {
+  const r = runPine(`indicator("a")
+a = array.new_float()
+for i = 1 to 5
+    a.push(i * 2)
+s = a.size()
+x = array.from(7, 8, 9).get(1)
+a.sort(order.descending)
+first = a.get(0)
+lastNeg = a.get(-1)
+plot(s)
+plot(x)
+plot(first)
+plot(lastNeg)
+plot(array.avg(a))
+plot(a.includes(4) ? 1 : 0)`, C);
+  assert.deepEqual(r.plots.map((p) => p.values.at(-1)), [5, 8, 10, 2, 6, 1]);
+});
+
+test('for x in array and for [i, x] in array', () => {
+  const r = runPine(`indicator("f")
+arr = array.from(10, 20, 30)
+total = 0
+idx = 0
+for v in arr
+    total += v
+for [i, v] in arr
+    if v == 20
+        idx := i
+plot(total)
+plot(idx)`, C);
+  assert.deepEqual(r.plots.map((p) => p.values.at(-1)), [60, 1]);
+});
+
+test('array index out of bounds is a clear error', () => {
+  assert.throws(() => runPine('indicator("o")\na = array.from(1, 2)\nplot(a.get(5))', C), /Line 3: Array index 5 is out of bounds \(size 2\)/);
+});
+
+test('drawings are skipped but their arguments still run', () => {
+  const r = runPine(`indicator("d", overlay=true)
+var labels = array.new_label()
+labels.push(label.new(bar_index, close, "x"))
+if labels.size() > 3
+    label.delete(labels.shift())
+var table tb = table.new(position.top_right, 2, 2)
+tb.cell(0, 0, "hi")
+ln = line.new(bar_index, close, bar_index + 1, close)
+ln.set_x2(bar_index + 2)
+plot(labels.size())`, C);
+  assert.equal(lastOf(r), 3); // shift() inside label.delete() kept the array at 3
+});
+
+test('strings: str.replace, str.format, str.tostring formats', () => {
+  const r = runPine(`indicator("s")
+a = str.replace("a-b-c", "-", "+", 1)
+b = str.format("{0} has {1,number,#.#}", "BTC", 1.25)
+c = str.tostring(3.14159, "#.##")
+d = str.tostring(2.5, "0.000")
+plot(a == "a-b+c" ? 1 : 0)
+plot(b == "BTC has 1.3" or b == "BTC has 1.2" ? 1 : 0)
+plot(c == "3.14" ? 1 : 0)
+plot(d == "2.500" ? 1 : 0)`, C);
+  assert.deepEqual(r.plots.map((p) => p.values.at(-1)), [1, 1, 1, 1]);
+});
+
+test('time functions with a timezone, timeframe.in_seconds', () => {
+  // mk() candles start at 1700000000 = Tuesday 2023-11-14 22:13 UTC (17:13 in New York)
+  const r = runPine(`indicator("t")
+plot(dayofweek(time, "UTC"))
+plot(hour(time, "GMT+3"))
+plot(dayofweek(time, "America/New_York"))
+plot(timeframe.in_seconds())
+plot(timeframe.in_seconds("1D"))`, C.slice(0, 1), {}, { resolution: '15m' });
+  assert.deepEqual(r.plots.map((p) => p.values[0]), [3, 1, 3, 900, 86400]);
+});
+
+test('strategy.equity is the initial capital; lower-tf request on the chart timeframe', () => {
+  const r = runPine(`strategy("st", initial_capital = 5000, default_qty_type = strategy.percent_of_equity)
+[c, v] = request.security_lower_tf(syminfo.tickerid, timeframe.period, [close, volume])
+[c2] = request.security_lower_tf(syminfo.tickerid, "1", [close])
+plot(strategy.equity)
+plot(c.size())
+plot(c.get(0) == close ? 1 : 0)
+plot(c2.size())`, C, {}, { resolution: '15m' });
+  assert.deepEqual(r.plots.map((p) => p.values.at(-1)), [5000, 1, 1, 0]);
+});

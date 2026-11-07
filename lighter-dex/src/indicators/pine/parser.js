@@ -187,9 +187,26 @@ class Exprs {
     if (this.isOp('-') || this.isOp('+')) { const op = this.next().v; return node('unary', this.line, { op, e: this.unary() }); }
     return this.postfix();
   }
+  /** Skips a type argument list like `<float>` or `<string, float>` when it is followed by "(". */
+  skipTypeArgs() {
+    if (!this.isOp('<')) return false;
+    let j = this.i;
+    let depth = 0;
+    for (; j < this.toks.length; j++) {
+      const t = this.toks[j];
+      if (t.t === 'op' && t.v === '<') depth++;
+      else if (t.t === 'op' && t.v === '>') { if (--depth === 0) break; }
+      else if (!(t.t === 'id' || (t.t === 'op' && t.v === ','))) return false;
+    }
+    const after = this.toks[j + 1];
+    if (depth !== 0 || !(after && after.t === 'op' && after.v === '(')) return false;
+    this.i = j + 1;
+    return true;
+  }
   postfix() {
     let e = this.primary();
     for (;;) {
+      if (e.type === 'name' && this.isOp('<')) this.skipTypeArgs(); // array.new<float>(...)
       if (this.isOp('(') && (e.type === 'name' || e.type === 'na')) {
         this.next();
         const { args, named } = this.args();
@@ -199,8 +216,14 @@ class Exprs {
         const offset = this.expr();
         this.expectOp(']');
         e = node('hist', this.line, { e, offset });
-      } else if (this.isOp('.') ) {
-        throw new PineError('Method-style calls (x.method()) are not supported', this.line);
+      } else if (this.isOp('.')) {
+        // method call on an expression result: array.from(a, b).get(i)
+        this.next();
+        const m = this.next();
+        if (!m || m.t !== 'id' || m.v.includes('.') || !this.isOp('(')) throw new PineError('Expected a method call after "."', this.line);
+        this.next();
+        const { args, named } = this.args();
+        e = node('mcall', this.line, { recv: e, method: m.v, args, named });
       } else return e;
     }
   }
@@ -336,7 +359,12 @@ class Parser {
     let k = 0;
     let isVar = false;
     if (toks[k]?.t === 'kw' && (toks[k].v === 'var' || toks[k].v === 'varip')) { isVar = true; k++; }
-    while (toks[k]?.t === 'id' && TYPE_WORDS.has(toks[k].v) && toks[k + 1]?.t === 'id') k++;
+    // optional type prefix: `float x`, `series float x`, `array<float> x`, `map<string, int> m`
+    for (;;) {
+      const after = skipType(toks, k);
+      if (after === k || toks[after]?.t !== 'id') break;
+      k = after;
+    }
     if (toks[k]?.t === 'id' && toks[k + 1]?.t === 'op') {
       const name = toks[k].v;
       const op = toks[k + 1].v;
@@ -405,7 +433,19 @@ class Parser {
 
   forStmt(ln) {
     const { toks, line } = ln;
-    if (toks[2]?.t === 'kw' && toks[2].v === 'in') throw new PineError('"for … in" loops are not supported', line);
+    // for x in arr  /  for [i, x] in arr
+    const inIdx = toks.findIndex((t) => t.t === 'kw' && t.v === 'in');
+    if (inIdx > 0) {
+      const head = toks.slice(1, inIdx).filter((t) => t.t === 'id').map((t) => t.v);
+      const tuple = toks[1]?.t === 'op' && toks[1].v === '[';
+      if (!head.length || (tuple ? head.length !== 2 : head.length !== 1)) throw new PineError('Expected "for x in array" or "for [i, x] in array"', line);
+      return node('forIn', line, {
+        idxV: tuple ? head[0] : null,
+        v: tuple ? head[1] : head[0],
+        src: parseExpr(toks.slice(inIdx + 1), line),
+        body: this.body(ln),
+      });
+    }
     if (toks[1]?.t !== 'id' || !(toks[2]?.t === 'op' && toks[2].v === '=')) throw new PineError('Expected "for i = start to end"', line);
     const toIdx = toks.findIndex((t) => t.t === 'kw' && t.v === 'to');
     if (toIdx < 0) throw new PineError('Expected "to" in for loop', line);
@@ -415,6 +455,24 @@ class Parser {
     const step = byIdx > 0 ? parseExpr(toks.slice(byIdx + 1), line) : null;
     return node('for', line, { v: toks[1].v, from, to, step, body: this.body(ln) });
   }
+}
+
+/** If toks[k] starts a type (`float`, `array<float>`, `map<string, int>`), returns the index after it; else k. */
+function skipType(toks, k) {
+  const t = toks[k];
+  if (!(t?.t === 'id' && TYPE_WORDS.has(t.v))) return k;
+  let j = k + 1;
+  if (toks[j]?.t === 'op' && toks[j].v === '<') {
+    let depth = 0;
+    for (; j < toks.length; j++) {
+      const x = toks[j];
+      if (x.t === 'op' && x.v === '<') depth++;
+      else if (x.t === 'op' && x.v === '>') { if (--depth === 0) return j + 1; }
+      else if (!(x.t === 'id' || (x.t === 'op' && x.v === ','))) return k;
+    }
+    return k;
+  }
+  return j;
 }
 
 function matchParen(toks, open) {

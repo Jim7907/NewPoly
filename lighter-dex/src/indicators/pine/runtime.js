@@ -24,7 +24,43 @@ const COLORS = {
 // Namespaced constants we accept and return as their own name (styles, shapes, etc.).
 const CONST_NS = /^(plot\.style_|shape\.|location\.|size\.|display\.|hline\.style_|line\.style_|label\.style_|extend\.|position\.|text\.|font\.|xloc\.|yloc\.|format\.|scale\.|barmerge\.|currency\.|order\.|alert\.freq_|plot\.linestyle_)/;
 // Drawing / cosmetic functions we accept and ignore so imported scripts still run.
-const IGNORED = /^(fill|bgcolor|barcolor|plotcandle|plotbar|alert|log\.\w+|runtime\.log|line\.\w+|label\.\w+|box\.\w+|table\.\w+|linefill\.\w+|polyline\.\w+|array\.\w+|matrix\.\w+|map\.\w+|max_bars_back|strategy\.cancel|strategy\.cancel_all|strategy\.risk\.\w+)$/;
+const IGNORED = /^(fill|bgcolor|barcolor|plotcandle|plotbar|alert|log\.\w+|runtime\.log|line\.\w+|label\.\w+|box\.\w+|table\.\w+|linefill\.\w+|polyline\.\w+|matrix\.\w+|map\.\w+|max_bars_back|strategy\.cancel|strategy\.cancel_all|strategy\.risk\.\w+)$/;
+
+/** A Pine `array<T>`. A class (not a bare JS array) so it is never mistaken for a tuple. */
+class PineArray {
+  constructor(items = []) { this.a = items; }
+}
+const ORDER_DESC = 'order.descending';
+
+/** Seconds in a timeframe string: TradingView style ("15", "60", "1D", "1W") or app style ("15m", "1h"). */
+function tfSeconds(tf) {
+  const m = String(tf ?? '').trim().match(/^(\d*)\s*([smhdDwWM]?)$/);
+  if (!m) return NaN;
+  const k = m[1] === '' ? 1 : Number(m[1]);
+  const unit = { s: 1, m: 60, h: 3600, d: 86400, D: 86400, w: 604800, W: 604800, M: 2592000, '': 60 }[m[2]];
+  return k * unit;
+}
+
+/** str.tostring(value, format): supports "#.##", "0.00", format.mintick / percent / volume. */
+function formatNumber(v, fmt, priceDecimals) {
+  if (typeof v !== 'number') return String(v);
+  if (Number.isNaN(v)) return 'NaN';
+  if (fmt === 'format.mintick') return v.toFixed(priceDecimals);
+  if (fmt === 'format.percent') return `${v.toFixed(2)}%`;
+  if (fmt === 'format.volume') {
+    const a = Math.abs(v);
+    return a >= 1e9 ? `${(v / 1e9).toFixed(3)}B` : a >= 1e6 ? `${(v / 1e6).toFixed(3)}M` : a >= 1e3 ? `${(v / 1e3).toFixed(3)}K` : String(v);
+  }
+  if (typeof fmt === 'string' && /[#0]/.test(fmt)) {
+    const dec = fmt.split('.')[1] ?? '';
+    const fixed = (dec.match(/0/g) ?? []).length;
+    const opt = (dec.match(/#/g) ?? []).length;
+    let s = v.toFixed(fixed + opt);
+    if (opt) s = s.replace(new RegExp(`0{1,${opt}}$`), '').replace(/\.$/, '');
+    return `${s}${fmt.endsWith('%') ? '%' : ''}`;
+  }
+  return String(v);
+}
 
 function hexToRgba(hex, transp = 0) {
   const h = String(hex).replace('#', '');
@@ -92,6 +128,31 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
     position: 0,
     pendingPosition: null,
     declName: null,
+    initialCapital: 1e6, // TradingView's default
+  };
+
+  /** Calendar parts of a UNIX-ms time in a Pine timezone ("UTC", "GMT+2", "America/New_York"). */
+  const timeParts = (ms, tz) => {
+    if (isNa(ms)) return null;
+    const d = new Date(ms);
+    const z = String(tz ?? 'UTC').trim();
+    const off = z.match(/^(?:UTC|GMT)\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?$/i);
+    if (!z || /^(UTC|GMT|Etc\/UTC|Etc\/GMT)$/i.test(z) || off) {
+      const shift = off ? (off[1] === '-' ? -1 : 1) * (Number(off[2]) * 60 + Number(off[3] ?? 0)) * 60000 : 0;
+      const u = new Date(ms + shift);
+      return { year: u.getUTCFullYear(), month: u.getUTCMonth() + 1, day: u.getUTCDate(), dow: u.getUTCDay() + 1, hour: u.getUTCHours(), minute: u.getUTCMinutes(), second: u.getUTCSeconds() };
+    }
+    try {
+      const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+        timeZone: z, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', weekday: 'short', hour: 'numeric', minute: 'numeric', second: 'numeric',
+      }).formatToParts(d).map((x) => [x.type, x.value]));
+      return {
+        year: +p.year, month: +p.month, day: +p.day, hour: +p.hour, minute: +p.minute, second: +p.second,
+        dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday) + 1,
+      };
+    } catch {
+      throw new PineError(`Unknown timezone "${z}"`);
+    }
   };
 
   const seriesVar = (name, bar) => {
@@ -142,6 +203,7 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
     if (++st.steps > MAX_STEPS) throw new PineError('Script is too heavy (too many operations)');
     switch (e.type) {
       case 'num': return e.v;
+      case 'value': return e.v; // already-evaluated receiver of a method call
       case 'str': return e.v;
       case 'bool': return e.v;
       case 'na': return NaN;
@@ -156,6 +218,7 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
       case 'bin': return binary(e, scope);
       case 'hist': return history(e, scope);
       case 'call': return call(e, scope);
+      case 'mcall': return methodCall(evalNode(e.recv, scope), e.method, e, scope);
       case 'blockExpr': return execStmt(e.stmt, scope, true);
       default: throw new PineError(`Unsupported expression (${e.type})`, e.line);
     }
@@ -206,6 +269,14 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
       case 'strategy.short': return 'short';
       case 'strategy.position_size': return st.position;
       case 'strategy.opentrades': return st.position !== 0 ? 1 : 0;
+      // The app trades from a strategy's signals and sizes orders from its own settings,
+      // so equity is the strategy's initial capital and P&L is not simulated here.
+      case 'strategy.equity': case 'strategy.initial_capital': return st.initialCapital;
+      case 'strategy.netprofit': case 'strategy.openprofit': case 'strategy.grossprofit': case 'strategy.grossloss': return 0;
+      case 'strategy.closedtrades': case 'strategy.wintrades': case 'strategy.losstrades': return 0;
+      case 'strategy.percent_of_equity': case 'strategy.fixed': case 'strategy.cash':
+      case 'strategy.commission.percent': case 'strategy.commission.cash_per_order': case 'strategy.commission.cash_per_contract':
+        return name;
       case 'syminfo.mintick': return 10 ** -(opts.priceDecimals ?? 2);
       case 'syminfo.ticker': case 'syminfo.tickerid': return opts.ticker ?? '';
       case 'timeframe.period': return opts.resolution ?? '';
@@ -348,6 +419,27 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
         }
         return last;
       }
+      case 'forIn': {
+        const src = evalNode(s.src, scope);
+        const items = src instanceof PineArray ? src.a : Array.isArray(src) ? src : null;
+        if (!items) throw new PineError('"for … in" needs an array', s.line);
+        let last;
+        // iterate a snapshot length, like Pine (changes to the array's size inside the loop aren't visited)
+        const len = items.length;
+        if (len > MAX_LOOP) throw new PineError('Loop runs too many times', s.line);
+        for (let i = 0; i < len && i < items.length; i++) {
+          if (s.idxV) scope.vars.set(s.idxV, i);
+          scope.vars.set(s.v, items[i]);
+          try {
+            last = execBlock(s.body, scope, wantValue);
+          } catch (x) {
+            if (x instanceof Break) break;
+            if (x instanceof Continue) continue;
+            throw x;
+          }
+        }
+        return last;
+      }
       case 'while': {
         let count = 0;
         let last;
@@ -377,16 +469,38 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
     const name = e.name;
     const user = st.funcs.get(name);
     if (user) return callUser(user, e, scope);
-    if (IGNORED.test(name)) {
-      // still evaluate args for side effects-free scripts? not needed
-      return NaN;
+    if (IGNORED.test(name)) return ignoredCall(e, scope);
+    const fn = BUILTINS[name];
+    if (!fn) {
+      // method call on a variable: arr.get(i) -> array.get(arr, i); drawings (tb.cell(...)) are skipped
+      const dot = name.lastIndexOf('.');
+      const owner = dot > 0 ? scope.find(name.slice(0, dot)) : null;
+      if (owner) return methodCall(owner.vars.get(name.slice(0, dot)), name.slice(dot + 1), e, scope);
+      throw new PineError(`${name}() is not supported yet`, e.line);
     }
     const key = `${scope.path}/c${e.id}`;
     const A = (i, d) => (e.args[i] !== undefined ? evalNode(e.args[i], scope) : d);
     const N = (k, i, d) => (e.named[k] !== undefined ? evalNode(e.named[k], scope) : e.args[i] !== undefined ? evalNode(e.args[i], scope) : d);
-    const fn = BUILTINS[name];
-    if (!fn) throw new PineError(`${name}() is not supported yet`, e.line);
     return fn({ A, N, e, key, scope });
+  }
+
+  /** recv.method(args) -> array.method(recv, args) / str.method(recv, args); drawing handles are skipped. */
+  function methodCall(recv, method, e, scope) {
+    const viaNs = (ns) => call({ ...e, type: 'call', name: `${ns}.${method}`, args: [{ type: 'value', v: recv }, ...e.args] }, scope);
+    if (recv instanceof PineArray) {
+      if (!BUILTINS[`array.${method}`]) throw new PineError(`array.${method}() is not supported yet`, e.line);
+      return viaNs('array');
+    }
+    if (typeof recv === 'string' && BUILTINS[`str.${method}`]) return viaNs('str');
+    return ignoredCall(e, scope); // label / line / box / table handle
+  }
+
+  /** Drawing calls are skipped, but their arguments still run (e.g. label.delete(arr.shift())). */
+  function ignoredCall(e, scope) {
+    for (const x of [...e.args, ...Object.values(e.named)]) {
+      try { evalNode(x, scope); } catch (err) { if (!(err instanceof PineError)) throw err; }
+    }
+    return NaN;
   }
 
   function callUser(f, e, scope) {
@@ -465,11 +579,95 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
     return l;
   };
 
+  // ---------------------------------------------------------------- arrays
+  const arr = (v, e) => {
+    if (v instanceof PineArray) return v.a;
+    throw new PineError(isNa(v) ? 'Array is na (not created yet)' : 'Expected an array', e.line);
+  };
+  const idx = (a, i, e) => {
+    let k = Math.trunc(num(i));
+    if (k < 0) k += a.length; // Pine v6 negative indexes count from the end
+    if (!(k >= 0 && k < a.length)) throw new PineError(`Array index ${num(i)} is out of bounds (size ${a.length})`, e.line);
+    return k;
+  };
+  const nums = (a) => a.map(num).filter((x) => !Number.isNaN(x));
+  const mean = (x) => (x.length ? x.reduce((s, v) => s + v, 0) / x.length : NaN);
+  const newArray = ({ A }) => {
+    const size = Math.max(0, Math.round(num(A(0, 0))) || 0);
+    const init = A(1, NaN);
+    return new PineArray(Array.from({ length: size }, () => init));
+  };
+  const ARRAY_BUILTINS = {
+    'array.new': newArray,
+    ...Object.fromEntries(['float', 'int', 'bool', 'string', 'color', 'line', 'label', 'box', 'table', 'linefill'].map((t) => [`array.new_${t}`, newArray])),
+    'array.from': ({ e, scope }) => new PineArray(e.args.map((x) => evalNode(x, scope))),
+    'array.copy': ({ A, e }) => new PineArray([...arr(A(0), e)]),
+    'array.size': ({ A, e }) => arr(A(0), e).length,
+    'array.get': ({ A, e }) => { const a = arr(A(0), e); return a[idx(a, A(1), e)]; },
+    'array.set': ({ A, e }) => { const a = arr(A(0), e); a[idx(a, A(1), e)] = A(2); return NaN; },
+    'array.first': ({ A, e }) => { const a = arr(A(0), e); return a[idx(a, 0, e)]; },
+    'array.last': ({ A, e }) => { const a = arr(A(0), e); return a[idx(a, -1, e)]; },
+    'array.push': ({ A, e }) => { arr(A(0), e).push(A(1)); return NaN; },
+    'array.unshift': ({ A, e }) => { arr(A(0), e).unshift(A(1)); return NaN; },
+    'array.pop': ({ A, e }) => { const a = arr(A(0), e); if (!a.length) throw new PineError('Cannot pop from an empty array', e.line); return a.pop(); },
+    'array.shift': ({ A, e }) => { const a = arr(A(0), e); if (!a.length) throw new PineError('Cannot shift an empty array', e.line); return a.shift(); },
+    'array.insert': ({ A, e }) => { const a = arr(A(0), e); const k = Math.trunc(num(A(1))); if (!(k >= 0 && k <= a.length)) throw new PineError(`Array index ${k} is out of bounds`, e.line); a.splice(k, 0, A(2)); return NaN; },
+    'array.remove': ({ A, e }) => { const a = arr(A(0), e); return a.splice(idx(a, A(1), e), 1)[0]; },
+    'array.clear': ({ A, e }) => { arr(A(0), e).length = 0; return NaN; },
+    'array.fill': ({ A, e }) => {
+      const a = arr(A(0), e);
+      const from = Math.max(0, Math.trunc(num(A(2, 0))));
+      const to = Math.min(a.length, Math.trunc(num(A(3, a.length))));
+      for (let i = from; i < to; i++) a[i] = A(1);
+      return NaN;
+    },
+    'array.concat': ({ A, e }) => { const a = arr(A(0), e); a.push(...arr(A(1), e)); return A(0); },
+    'array.slice': ({ A, e }) => new PineArray(arr(A(0), e).slice(Math.trunc(num(A(1))), Math.trunc(num(A(2))))),
+    'array.reverse': ({ A, e }) => { arr(A(0), e).reverse(); return NaN; },
+    'array.sort': ({ A, e }) => {
+      const desc = A(1, 'order.ascending') === ORDER_DESC;
+      arr(A(0), e).sort((x, y) => (typeof x === 'string' ? String(x).localeCompare(y) : num(x) - num(y)) * (desc ? -1 : 1));
+      return NaN;
+    },
+    'array.sort_indices': ({ A, e }) => {
+      const a = arr(A(0), e);
+      const desc = A(1, 'order.ascending') === ORDER_DESC;
+      return new PineArray(a.map((_, i) => i).sort((x, y) => (num(a[x]) - num(a[y])) * (desc ? -1 : 1)));
+    },
+    'array.includes': ({ A, e }) => arr(A(0), e).includes(A(1)),
+    'array.indexof': ({ A, e }) => arr(A(0), e).indexOf(A(1)),
+    'array.lastindexof': ({ A, e }) => arr(A(0), e).lastIndexOf(A(1)),
+    'array.join': ({ A, e }) => arr(A(0), e).map((x) => formatNumber(x, null)).join(String(A(1, ''))),
+    'array.sum': ({ A, e }) => nums(arr(A(0), e)).reduce((s, v) => s + v, 0),
+    'array.avg': ({ A, e }) => mean(nums(arr(A(0), e))),
+    'array.max': ({ A, e }) => { const x = nums(arr(A(0), e)).sort((p, q) => q - p); return x[Math.trunc(num(A(1, 0)))] ?? NaN; },
+    'array.min': ({ A, e }) => { const x = nums(arr(A(0), e)).sort((p, q) => p - q); return x[Math.trunc(num(A(1, 0)))] ?? NaN; },
+    'array.range': ({ A, e }) => { const x = nums(arr(A(0), e)); return x.length ? Math.max(...x) - Math.min(...x) : NaN; },
+    'array.median': ({ A, e }) => {
+      const x = nums(arr(A(0), e)).sort((p, q) => p - q);
+      if (!x.length) return NaN;
+      const m = Math.floor(x.length / 2);
+      return x.length % 2 ? x[m] : (x[m - 1] + x[m]) / 2;
+    },
+    'array.variance': ({ A, e }) => { const x = nums(arr(A(0), e)); const m = mean(x); return mean(x.map((v) => (v - m) ** 2)); },
+    'array.stdev': ({ A, e }) => { const x = nums(arr(A(0), e)); const m = mean(x); return Math.sqrt(mean(x.map((v) => (v - m) ** 2))); },
+    'array.abs': ({ A, e }) => new PineArray(arr(A(0), e).map((v) => Math.abs(num(v)))),
+    'array.every': ({ A, e }) => arr(A(0), e).every(truthy),
+    'array.some': ({ A, e }) => arr(A(0), e).some(truthy),
+  };
+
   const BUILTINS = {
     // --- declarations & inputs
     indicator: ({ N }) => { out.title = N('title', 0, out.title); out.overlay = truthy(N('overlay', 2, false)); return NaN; },
     study: ({ N }) => { out.title = N('title', 0, out.title); out.overlay = truthy(N('overlay', 2, false)); return NaN; },
-    strategy: ({ N }) => { out.title = N('title', 0, out.title); out.overlay = truthy(N('overlay', 2, false)); out.isStrategy = true; return NaN; },
+    strategy: ({ N }) => {
+      out.title = N('title', 0, out.title);
+      out.overlay = truthy(N('overlay', 2, false));
+      out.isStrategy = true;
+      const cap = num(N('initial_capital', 99, 1e6));
+      if (cap > 0) st.initialCapital = cap;
+      return NaN;
+    },
     input: (c) => inputFn(c, 'auto'),
     'input.int': (c) => inputFn(c, 'int'),
     'input.float': (c) => inputFn(c, 'float'),
@@ -569,9 +767,6 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
     'math.atan': ({ A }) => Math.atan(num(A(0))),
     'math.todegrees': ({ A }) => (num(A(0)) * 180) / Math.PI,
     'math.toradians': ({ A }) => (num(A(0)) * Math.PI) / 180,
-    'str.tostring': ({ A }) => String(A(0)),
-    tostring: ({ A }) => String(A(0)),
-    'str.format': ({ A }) => String(A(0)),
     'color.new': ({ A }) => hexToRgba(A(0), A(1, 0)),
     'color.rgb': ({ A }) => `rgba(${num(A(0))},${num(A(1))},${num(A(2))},${1 - num(A(3, 0)) / 100})`,
     color: ({ A }) => A(0),
@@ -810,6 +1005,66 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
     },
     'ta.pivothigh': ({ A, key, e }) => pivot(A, key, e, true),
     'ta.pivotlow': ({ A, key, e }) => pivot(A, key, e, false),
+
+    // --- time parts: dayofweek(time, "UTC"), hour(t), ...
+    ...Object.fromEntries([['dayofweek', 'dow'], ['hour', 'hour'], ['minute', 'minute'], ['second', 'second'], ['dayofmonth', 'day'], ['month', 'month'], ['year', 'year']]
+      .map(([fn, part]) => [fn, ({ A, e }) => {
+        try {
+          const p = timeParts(num(A(0, candles[st.bar].time * 1000)), A(1, 'UTC'));
+          return p ? p[part] : NaN;
+        } catch (err) { throw new PineError(err.message.replace(/^Line \d+: /, ''), e.line); }
+      }])),
+
+    // --- timeframe / other-timeframe data
+    'timeframe.in_seconds': ({ A }) => tfSeconds(A(0, opts.resolution ?? '')),
+    // Intrabar (lower timeframe) data isn't available here. Asking for the chart's own
+    // timeframe gives one value per bar, as on TradingView; a lower timeframe gives empty arrays.
+    'request.security_lower_tf': ({ A, e, scope }) => {
+      const tf = A(1, '');
+      const same = tf === '' || tf === (opts.resolution ?? '') || tfSeconds(tf) === tfSeconds(opts.resolution ?? '');
+      const expr = e.args[2] ?? e.named.expression;
+      if (!expr) throw new PineError('request.security_lower_tf() needs an expression', e.line);
+      if (!same) return expr.type === 'tuple' ? expr.items.map(() => new PineArray()) : new PineArray();
+      const v = evalNode(expr, scope);
+      return Array.isArray(v) ? v.map((x) => new PineArray([x])) : new PineArray([v]);
+    },
+
+    // --- strings
+    'str.tostring': ({ A }) => formatNumber(A(0), A(1, null), opts.priceDecimals ?? 2),
+    tostring: ({ A }) => formatNumber(A(0), A(1, null), opts.priceDecimals ?? 2),
+    'str.format': ({ e, scope }) => {
+      const vals = e.args.map((x) => evalNode(x, scope));
+      return String(vals[0]).replace(/\{(\d+)(?:,\s*number,\s*([^}]*))?\}/g, (_, i, f) => {
+        const v = vals[Number(i) + 1];
+        return v === undefined ? '' : f ? formatNumber(v, f.trim(), opts.priceDecimals ?? 2) : formatNumber(v, null);
+      });
+    },
+    'str.length': ({ A }) => String(A(0)).length,
+    'str.contains': ({ A }) => String(A(0)).includes(String(A(1))),
+    'str.startswith': ({ A }) => String(A(0)).startsWith(String(A(1))),
+    'str.endswith': ({ A }) => String(A(0)).endsWith(String(A(1))),
+    'str.pos': ({ A }) => { const p = String(A(0)).indexOf(String(A(1))); return p < 0 ? NaN : p; },
+    'str.upper': ({ A }) => String(A(0)).toUpperCase(),
+    'str.lower': ({ A }) => String(A(0)).toLowerCase(),
+    'str.trim': ({ A }) => String(A(0)).trim(),
+    'str.substring': ({ A }) => String(A(0)).substring(num(A(1, 0)), A(2) === undefined ? undefined : num(A(2))),
+    'str.replace': ({ A }) => {
+      const s = String(A(0)), target = String(A(1)), repl = String(A(2));
+      let occ = Math.max(0, Math.round(num(A(3, 0))));
+      let from = 0;
+      for (;;) {
+        const p = s.indexOf(target, from);
+        if (p < 0 || !target) return s;
+        if (occ-- === 0) return s.slice(0, p) + repl + s.slice(p + target.length);
+        from = p + target.length;
+      }
+    },
+    'str.replace_all': ({ A }) => { const t = String(A(1)); return t ? String(A(0)).split(t).join(String(A(2))) : String(A(0)); },
+    'str.split': ({ A }) => new PineArray(String(A(0)).split(String(A(1)))),
+    'str.tonumber': ({ A }) => { const v = Number(A(0)); return Number.isFinite(v) ? v : NaN; },
+    'str.repeat': ({ A }) => { const n = Math.max(0, Math.round(num(A(1, 0)))); return Array.from({ length: n }, () => String(A(0))).join(String(A(2, ''))); },
+
+    ...ARRAY_BUILTINS,
   };
 
   function pivot(A, key, e, high) {
