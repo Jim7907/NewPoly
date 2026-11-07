@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAccount } from 'wagmi';
-import { buildOrder, marketOrderPrice, maxLeverage, validateSize } from '../lighter/orders.js';
+import {
+  buildEntryWithTpSl, buildOrder, marketOrderPrice, maxLeverage, pnlAt, validateSize, validateTpSl,
+} from '../lighter/orders.js';
 import { INTEGRATOR, MARGIN_MODE, NETWORK } from '../lighter/config.js';
 import { shortErr } from '../lighter/useLighter.js';
 import { fmtNum, fmtUsd, roundTo } from '../lighter/units.js';
 
-export default function OrderForm({ market, book, lighter, presetPrice }) {
+export default function OrderForm({ market, book, lighter, presetPrice, sideRequest }) {
   const { isConnected } = useAccount();
   const [side, setSide] = useState('buy');
+  const [tpslOn, setTpslOn] = useState(false);
+  const [tp, setTp] = useState('');
+  const [sl, setSl] = useState('');
   const [kind, setKind] = useState('market');
   const [price, setPrice] = useState('');
   const [size, setSize] = useState('');
@@ -27,8 +32,13 @@ export default function OrderForm({ market, book, lighter, presetPrice }) {
   useEffect(() => {
     setPrice('');
     setSize('');
+    setTp('');
+    setSl('');
     setMsg(null);
   }, [market?.market_id]);
+  useEffect(() => {
+    if (sideRequest) setSide(sideRequest.side);
+  }, [sideRequest]);
   useEffect(() => {
     if (presetPrice) {
       setKind('limit');
@@ -50,6 +60,11 @@ export default function OrderForm({ market, book, lighter, presetPrice }) {
   const margin = notional / leverage;
   const sizeError = size ? validateSize(market, size, refPrice) : null;
   const maxLev = maxLeverage(market);
+  const isLong = !isAsk;
+  const tpslError = tpslOn && (tp || sl) ? validateTpSl({ isLong, refPrice, tp, sl }) : null;
+  const pctFrom = (p) => (Number(p) > 0 && refPrice ? ((Number(p) / refPrice - 1) * 100 * (isLong ? 1 : -1)) : null);
+  const tpPnl = Number(tp) > 0 && Number(size) > 0 ? pnlAt({ isLong, entryPrice: refPrice, exitPrice: tp, size }) : null;
+  const slPnl = Number(sl) > 0 && Number(size) > 0 ? pnlAt({ isLong, entryPrice: refPrice, exitPrice: sl, size }) : null;
 
   const setPct = (pct) => {
     if (!refPrice || !available) return;
@@ -66,10 +81,22 @@ export default function OrderForm({ market, book, lighter, presetPrice }) {
       const px = kind === 'market'
         ? await marketOrderPrice(market, isAsk, Number(slippagePct) / 100)
         : price;
-      const order = buildOrder(market, { isAsk, size, price: px, kind, reduceOnly, postOnly });
-      await lighter.placeOrder(order);
-      setMsg({ type: 'ok', text: `${side === 'buy' ? 'Buy' : 'Sell'} ${size} ${market.symbol} submitted` });
+      const entryParams = { isAsk, size, price: px, kind, reduceOnly, postOnly };
+      const withTpSl = tpslOn && (tp || sl);
+      if (withTpSl) {
+        const err2 = validateTpSl({ isLong, refPrice, tp, sl });
+        if (err2) throw new Error(err2);
+        await lighter.placeGroupedOrders(buildEntryWithTpSl(market, entryParams, { tp, sl }));
+      } else {
+        await lighter.placeOrder(buildOrder(market, entryParams));
+      }
+      setMsg({
+        type: 'ok',
+        text: `${side === 'buy' ? 'Buy' : 'Sell'} ${size} ${market.symbol} submitted${withTpSl ? ' with TP/SL' : ''}`,
+      });
       setSize('');
+      setTp('');
+      setSl('');
     } catch (e) {
       setMsg({ type: 'error', text: shortErr(e) });
     } finally {
@@ -133,6 +160,7 @@ export default function OrderForm({ market, book, lighter, presetPrice }) {
       </div>
 
       <div className="checks">
+        <label><input type="checkbox" checked={tpslOn} onChange={(e) => setTpslOn(e.target.checked)} /> TP/SL</label>
         <label><input type="checkbox" checked={reduceOnly} onChange={(e) => setReduceOnly(e.target.checked)} /> Reduce only</label>
         {kind === 'limit' && (
           <label><input type="checkbox" checked={postOnly} onChange={(e) => setPostOnly(e.target.checked)} /> Post only</label>
@@ -143,6 +171,21 @@ export default function OrderForm({ market, book, lighter, presetPrice }) {
           </label>
         )}
       </div>
+
+      {tpslOn && (
+        <div className="tpsl-grid">
+          <label className="field">
+            <span>Take profit {pctFrom(tp) !== null && <em className="up">+{pctFrom(tp).toFixed(2)}%</em>}</span>
+            <input inputMode="decimal" value={tp} placeholder="Trigger price" onChange={(e) => setTp(e.target.value)} />
+            {tpPnl !== null && <small className={tpPnl >= 0 ? 'up' : 'down'}>≈ {fmtUsd(tpPnl)}</small>}
+          </label>
+          <label className="field">
+            <span>Stop loss {pctFrom(sl) !== null && <em className="down">{pctFrom(sl).toFixed(2)}%</em>}</span>
+            <input inputMode="decimal" value={sl} placeholder="Trigger price" onChange={(e) => setSl(e.target.value)} />
+            {slPnl !== null && <small className={slPnl >= 0 ? 'up' : 'down'}>≈ {fmtUsd(slPnl)}</small>}
+          </label>
+        </div>
+      )}
 
       <dl className="summary">
         <dt>Order value</dt><dd>{notional ? fmtUsd(notional) : '—'}</dd>
@@ -158,14 +201,16 @@ export default function OrderForm({ market, book, lighter, presetPrice }) {
       <ActionButton
         isConnected={isConnected}
         lighter={lighter}
-        disabled={submitting || !!sizeError}
+        disabled={submitting || !!sizeError || !!tpslError}
         label={submitting ? 'Submitting…' : `${side === 'buy' ? 'Buy' : 'Sell'} ${market.symbol}`}
         side={side}
         onSubmit={submit}
       />
 
-      {(sizeError || msg || lighter.error) && (
-        <div className={`msg ${msg?.type === 'ok' ? 'ok' : 'error'}`}>{sizeError || msg?.text || lighter.error}</div>
+      {(sizeError || tpslError || msg || lighter.error) && (
+        <div className={`msg ${msg?.type === 'ok' && !sizeError && !tpslError ? 'ok' : 'error'}`}>
+          {sizeError || tpslError || msg?.text || lighter.error}
+        </div>
       )}
     </div>
   );

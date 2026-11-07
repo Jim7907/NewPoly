@@ -26,7 +26,15 @@ export default function App() {
   const { data: markets = [], error: marketsError } = useMarkets();
   const [marketId, setMarketId] = useState(initialMarket);
   const [presetPrice, setPresetPrice] = useState(null);
+  const [sideRequest, setSideRequest] = useState(null);
+  const [mobileTab, setMobileTab] = useState('chart');
   const lighter = useLighter();
+  const openPositions = (lighter.account?.positions ?? []).filter((p) => Number(p.position) !== 0).length;
+
+  const startTrade = (side) => {
+    setSideRequest({ side, at: Date.now() });
+    setMobileTab('trade');
+  };
 
   // Warm the 8 MB signer in the background so the first order is instant.
   useEffect(() => {
@@ -62,15 +70,50 @@ export default function App() {
 
       {marketsError && <div className="banner">Could not reach Lighter API: {marketsError.message}</div>}
 
-      <main className="grid">
+      <main className="grid" data-mtab={mobileTab}>
         <Chart market={market} />
         <div className="col-book">
-          <OrderBook market={market} book={book} onPrice={(price) => setPresetPrice({ price, at: Date.now() })} />
+          <OrderBook
+            market={market}
+            book={book}
+            onPrice={(price) => {
+              setPresetPrice({ price, at: Date.now() });
+              setMobileTab('trade');
+            }}
+          />
           <Trades market={market} />
         </div>
-        <OrderForm market={market} book={book} lighter={lighter} presetPrice={presetPrice} />
-        <AccountTabs lighter={lighter} markets={markets} onSelectMarket={setMarketId} />
+        <OrderForm market={market} book={book} lighter={lighter} presetPrice={presetPrice} sideRequest={sideRequest} />
+        <AccountTabs
+          lighter={lighter}
+          markets={markets}
+          onSelectMarket={(id) => {
+            setMarketId(id);
+            setMobileTab('chart');
+          }}
+        />
       </main>
+
+      {/* Phone only: quick buy/sell bar + bottom navigation */}
+      {(mobileTab === 'chart' || mobileTab === 'book') && market && (
+        <div className="mobile-cta">
+          <button className="btn btn-buy" onClick={() => startTrade('buy')}>Buy / Long</button>
+          <button className="btn btn-sell" onClick={() => startTrade('sell')}>Sell / Short</button>
+        </div>
+      )}
+      <nav className="bottom-nav" aria-label="Sections">
+        {[
+          ['chart', '📈', 'Chart'],
+          ['book', '📖', 'Book'],
+          ['trade', '⚡', 'Trade'],
+          ['account', '💼', openPositions ? `Positions (${openPositions})` : 'Account'],
+        ].map(([k, icon, label]) => (
+          <button key={k} className={mobileTab === k ? 'active' : ''} onClick={() => setMobileTab(k)}>
+            <span aria-hidden="true">{icon}</span>
+            {label}
+          </button>
+        ))}
+      </nav>
 
       <footer className="footer muted">
         Orders are signed in your browser and sent directly to Lighter. This interface never holds your funds.

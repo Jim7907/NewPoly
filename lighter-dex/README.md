@@ -6,8 +6,14 @@ margin, liquidations and custody; this app is "just" the frontend — no backend
 
 - Live markets, candlestick chart, order book (WebSocket with REST fallback), recent trades
 - Market & limit orders, post-only, reduce-only, slippage cap, leverage
-- Positions (one-click close), open orders (cancel), account balances
-- Optional **integrator fee**: earn a cut of every trade routed through your frontend
+- **TP/SL**: attach take-profit / stop-loss to a new order (one grouped tx), or add them to an
+  open position (OCO pair tied to the whole position) — Lighter-native, they fire with the app closed
+- **History & PnL**: fills with realized PnL, win rate, per-market stats, PnL chart (7/30/90d), funding payments
+- **Indicators**: EMA, SMA, Bollinger, VWAP, RSI, MACD, Stochastic, ATR — plus **user-imported
+  custom indicators** (paste or upload a script, share it, edit inputs)
+- **Telegram alerts**: price crosses and "position close to liquidation" warnings
+- **Phone layout**: bottom tabs (Chart / Book / Trade / Account), big buy/sell bar, position cards
+- Optional **integrator fee**: earn a cut of every trade routed through your frontend (earnings shown in Account tab)
 
 ## Quick start
 
@@ -36,6 +42,44 @@ Options: `NETWORK=mainnet`, `DOMAIN=trade.yourdomain.com`, `HTTPS=0` — e.g.
 
 **On your phone:** open that URL inside your wallet app's built-in browser
 (MetaMask / Rabby / Coinbase Wallet → Browser), then tap **Connect wallet**.
+
+### Turn on Telegram alerts
+
+1. In Telegram, message **@BotFather** → `/newbot` → pick a name → copy the token.
+2. Re-run the deploy with it:
+   `curl -fsSL …/deploy.sh | TELEGRAM_BOT_TOKEN=123456:ABC… bash`
+3. In the app: **Alerts** tab → **Connect Telegram** → tap **Start** in Telegram.
+
+The `alerts` container (`alerts/server.js`, no dependencies) links each browser to a Telegram chat
+via a random secret, checks Lighter mark prices every 10s, and stores alerts in a Docker volume.
+
+## Custom indicators
+
+Indicators are small JavaScript scripts. Users click **ƒx Indicators → + New / paste** (or import a
+`.js` file). Each script receives `candles`, `inputs` and the `ta` helper library and returns lines:
+
+```js
+// @name Fast/slow EMA cross
+// @input fast 9
+// @input slow 21
+const close = ta.close(candles);
+return {
+  pane: 'overlay',                   // or 'separate' for a panel under the chart
+  plots: [
+    { name: 'Fast', values: ta.ema(close, inputs.fast), color: '#f5a524' },
+    { name: 'Slow', values: ta.ema(close, inputs.slow) },
+  ],
+  // levels: [30, 70]                // dashed lines in a separate pane
+};
+```
+
+`ta` has `sma ema rma wma stdev highest lowest change rsi macd bb atr vwap stoch` and
+`close/open/high/low/volume/hl2/hlc3(candles)`. Built-ins use the same format — "Copy as custom"
+is a quick way to start.
+
+**Safety:** scripts run in a Web Worker, isolated from the page. They can't read `localStorage` (where
+the trading key is), touch the DOM or call the signer, and anything running longer than 2s is killed.
+Output is validated before drawing.
 
 ## How it works
 
@@ -73,7 +117,10 @@ Options: `NETWORK=mainnet`, `DOMAIN=trade.yourdomain.com`, `HTTPS=0` — e.g.
 | `src/lighter/useLighter.js` | Session: account lookup, key registration, nonce queue, trade actions |
 | `src/lighter/useMarketData.js` | Markets, candles, trades, live order book |
 | `src/lighter/orders.js`, `units.js` | Decimal → integer scaling, order building, validation |
-| `src/components/*` | Chart, order book, trades, order form, positions/orders |
+| `src/lighter/history.js` | Fills → realized PnL, win rate, per-market stats |
+| `src/indicators/*` | TA library, built-ins, sandboxed worker runner, saved indicator list |
+| `src/components/*` | Chart, order book, trades, order form (TP/SL), positions, history, alerts |
+| `alerts/` | Telegram alerts server (own container) |
 | `scripts/fetch-signer.mjs` | Downloads the signer pinned by commit + SHA-256 |
 
 ## Earning fees (integrator)

@@ -142,3 +142,40 @@ export async function getActiveOrders(accountIndex, authToken, marketId) {
 export async function sendTx(txType, txInfo) {
   return request('sendTx', { method: 'POST', form: { tx_type: String(txType), tx_info: txInfo } });
 }
+
+// ---- history (auth) ----
+
+/** Account fills, newest first. Pass `cursor` from the previous page to load more. */
+export async function getAccountTrades(accountIndex, authToken, { cursor, limit = 50 } = {}) {
+  const d = await request('trades', {
+    params: { account_index: accountIndex, sort_by: 'timestamp', sort_dir: 'desc', limit, cursor },
+    headers: { authorization: authToken },
+  });
+  return { trades: d.trades ?? [], nextCursor: d.next_cursor || null };
+}
+
+export async function getPositionFunding(accountIndex, authToken, { cursor, limit = 50 } = {}) {
+  const d = await request('positionFunding', {
+    params: { account_index: accountIndex, limit, cursor },
+    headers: { authorization: authToken },
+  });
+  return { fundings: d.position_fundings ?? [], nextCursor: d.next_cursor || null };
+}
+
+/** Daily account PnL series (cumulative values), oldest first. */
+export async function getPnlSeries(accountIndex, authToken, days = 30) {
+  const end = Math.floor(Date.now() / 1000);
+  const d = await request('pnl', {
+    params: {
+      by: 'index', value: accountIndex, resolution: '1d',
+      start_timestamp: end - days * 86400, end_timestamp: end, count_back: days,
+    },
+    headers: { authorization: authToken },
+  });
+  return d.pnl ?? [];
+}
+
+/** Integrator ("partner") earnings for an account index; public. */
+export async function getPartnerStats(accountIndex) {
+  return request('partnerStats', { params: { account_index: accountIndex } });
+}

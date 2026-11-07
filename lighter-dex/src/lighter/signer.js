@@ -126,6 +126,34 @@ export class LighterSigner {
     );
   }
 
+  /** Several orders in one tx, linked by `groupingType` (see GROUPING in config.js). */
+  async signCreateGroupedOrders(groupingType, orders, nonce, integrator) {
+    await this.#select();
+    const flat = orders.flatMap((o) => [
+      o.marketIndex,
+      o.clientOrderIndex,
+      String(o.baseAmount),
+      String(o.price),
+      o.isAsk ? 1 : 0,
+      o.orderType,
+      o.timeInForce,
+      o.reduceOnly ? 1 : 0,
+      String(o.triggerPrice ?? '0'),
+      o.orderExpiry,
+    ]);
+    return call(
+      '_signCreateGroupedOrders',
+      this.accountIndex,
+      groupingType,
+      orders.length,
+      ...flat,
+      nonce,
+      integrator ? integrator.accountIndex : NIL,
+      integrator ? integrator.takerFee : NIL,
+      integrator ? integrator.makerFee : NIL,
+    );
+  }
+
   async signCancelOrder(marketIndex, orderIndex, nonce) {
     await this.#select();
     return call('_signCancelOrder', this.accountIndex, marketIndex, String(orderIndex), nonce);

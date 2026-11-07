@@ -186,6 +186,27 @@ export function useLighter() {
     [submit],
   );
 
+  /** { groupingType, orders } from orders.js; groupingType null = single order. */
+  const placeGroupedOrders = useCallback(
+    ({ groupingType, orders }) =>
+      groupingType === null
+        ? submit(TX_TYPE.CREATE_ORDER, (signer, nonce) =>
+            signer.signCreateOrder({ ...orders[0], integrator: INTEGRATOR ?? undefined }, nonce))
+        : submit(TX_TYPE.CREATE_GROUPED_ORDERS, (signer, nonce) =>
+            signer.signCreateGroupedOrders(groupingType, orders, nonce, INTEGRATOR ?? undefined)),
+    [submit],
+  );
+
+  /** Short-lived read token for private endpoints (orders, trades, funding, PnL). */
+  const getAuthToken = useCallback(async () => {
+    const signer = signerRef.current;
+    if (!signer) throw new Error('Trading not enabled');
+    if (!authRef.current || authRef.current.expiresAt - Date.now() < 5 * 60e3) {
+      authRef.current = await signer.createAuthToken();
+    }
+    return authRef.current.token;
+  }, []);
+
   const cancelOrder = useCallback(
     (marketIndex, orderIndex) =>
       submit(TX_TYPE.CANCEL_ORDER, (signer, nonce) => signer.signCancelOrder(marketIndex, orderIndex, nonce)),
@@ -213,14 +234,7 @@ export function useLighter() {
     queryKey: ['lighter-orders', accountIndex],
     enabled: tradingReady && accountIndex !== null,
     refetchInterval: 3000,
-    queryFn: async () => {
-      const signer = signerRef.current;
-      if (!signer) return [];
-      if (!authRef.current || authRef.current.expiresAt - Date.now() < 5 * 60e3) {
-        authRef.current = await signer.createAuthToken();
-      }
-      return api.getActiveOrders(accountIndex, authRef.current.token);
-    },
+    queryFn: async () => (signerRef.current ? api.getActiveOrders(accountIndex, await getAuthToken()) : []),
   });
 
   return {
@@ -233,9 +247,12 @@ export function useLighter() {
     orders: ordersQuery.data ?? [],
     enableTrading,
     approveIntegrator,
+    tradingReady,
     placeOrder,
+    placeGroupedOrders,
     cancelOrder,
     updateLeverage,
+    getAuthToken,
     clearError: () => setError(null),
   };
 }

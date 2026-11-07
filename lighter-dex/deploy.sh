@@ -9,6 +9,7 @@
 #   NETWORK=testnet|mainnet   Lighter network (default: testnet = fake money)
 #   DOMAIN=trade.example.com  your own domain (default: <vps-ip>.sslip.io, works with no DNS setup)
 #   HTTPS=0                   skip the HTTPS proxy, serve plain http on port 3003 only
+#   TELEGRAM_BOT_TOKEN=...    enable Telegram alerts (token from @BotFather)
 set -euo pipefail
 
 REPO="${REPO:-https://github.com/Jim7907/NewPoly.git}"
@@ -36,8 +37,15 @@ cd "$DIR/lighter-dex"
 
 # Config: create .env on first run, then apply NETWORK if given.
 [ -f .env ] || cp .env.example .env
-if [ -n "${NETWORK:-}" ]; then
-  sed -i "s/^VITE_LIGHTER_NETWORK=.*/VITE_LIGHTER_NETWORK=${NETWORK}/" .env
+set_env() { # set_env KEY VALUE  (adds the line if missing)
+  if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi
+}
+[ -n "${NETWORK:-}" ] && set_env VITE_LIGHTER_NETWORK "$NETWORK"
+[ -n "${TELEGRAM_BOT_TOKEN:-}" ] && set_env TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
+if grep -q '^TELEGRAM_BOT_TOKEN=.\+' .env; then
+  echo "==> Telegram alerts: enabled"
+else
+  echo "==> Telegram alerts: off (re-run with TELEGRAM_BOT_TOKEN=<token from @BotFather> to enable)"
 fi
 echo "==> Network: $(grep '^VITE_LIGHTER_NETWORK=' .env | cut -d= -f2)  (edit $DIR/lighter-dex/.env to change)"
 
@@ -65,7 +73,7 @@ if [ "$HTTPS" = "1" ] && ! port_busy 80 && ! port_busy 443; then
 else
   [ "$HTTPS" = "1" ] && echo "!! Ports 80/443 are already in use on this VPS — skipping automatic HTTPS."
   echo "==> Building + starting (http only)"
-  docker compose up --build -d web
+  docker compose up --build -d web alerts
   URL="http://$IP:3003"
 fi
 docker compose ps

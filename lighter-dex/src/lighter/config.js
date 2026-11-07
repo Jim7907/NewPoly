@@ -44,9 +44,23 @@ export const TX_TYPE = {
   CANCEL_ORDER: 15,
   CANCEL_ALL_ORDERS: 16,
   UPDATE_LEVERAGE: 20,
+  CREATE_GROUPED_ORDERS: 28,
   APPROVE_INTEGRATOR: 45,
 };
 
-export const ORDER_TYPE = { LIMIT: 0, MARKET: 1 };
+export const ORDER_TYPE = {
+  LIMIT: 0,
+  MARKET: 1,
+  STOP_LOSS: 2,
+  STOP_LOSS_LIMIT: 3,
+  TAKE_PROFIT: 4,
+  TAKE_PROFIT_LIMIT: 5,
+};
+// How the orders in a grouped tx relate to each other.
+export const GROUPING = {
+  OTO: 1, // first order triggers the rest when filled
+  OCO: 2, // one cancels the other
+  OTOCO: 3, // first order triggers an OCO pair (entry + TP + SL)
+};
 export const TIME_IN_FORCE = { IOC: 0, GTT: 1, POST_ONLY: 2 };
 export const MARGIN_MODE = { CROSS: 0, ISOLATED: 1 };
