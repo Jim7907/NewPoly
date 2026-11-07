@@ -21,7 +21,7 @@ export default function AutoTrader({ bot, lighter, markets, indicators }) {
     retry: false,
     queryFn: async () => {
       const candles = await api.getCandles(market.market_id, cfg.resolution, 300);
-      const r = await runIndicator(ind.code, candles, ind.inputs);
+      const r = await runIndicator(ind, candles, { priceDecimals: market.price_decimals, resolution: cfg.resolution, ticker: market.symbol });
       if (!r.signals) return { noSignals: true };
       return { ...backtest(candles, r.signals, { mode: cfg.mode, tpPct: cfg.tpPct, slPct: cfg.slPct }), from: candles[0]?.time };
     },
@@ -105,8 +105,9 @@ export default function AutoTrader({ bot, lighter, markets, indicators }) {
             <div className="msg error">{preview.error.message}</div>
           ) : bt?.noSignals ? (
             <div className="msg error">
-              &quot;{ind?.name}&quot; doesn&apos;t return <code>signals</code>, so it can&apos;t trade. Pick a strategy, or add
-              <code> signals</code> to your script (see the template under ƒx Indicators).
+              &quot;{ind?.name}&quot; gives no buy/sell signals, so it can&apos;t trade. Pick a strategy, or in your Pine script
+              call <code>strategy.entry()</code>/<code>strategy.close()</code> or add <code>alertcondition(cond, &quot;Buy&quot;)</code> /
+              <code>alertcondition(cond, &quot;Sell&quot;)</code>.
             </div>
           ) : bt ? (
             <>

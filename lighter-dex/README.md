@@ -9,8 +9,9 @@ margin, liquidations and custody; this app is "just" the frontend — no backend
 - **TP/SL**: attach take-profit / stop-loss to a new order (one grouped tx), or add them to an
   open position (OCO pair tied to the whole position) — Lighter-native, they fire with the app closed
 - **History & PnL**: fills with realized PnL, win rate, per-market stats, PnL chart (7/30/90d), funding payments
-- **Indicators**: EMA, SMA, Bollinger, VWAP, RSI, MACD, Stochastic, ATR — plus **user-imported
-  custom indicators** (paste or upload a script, share it, edit inputs)
+- **All markets**: every Lighter perp and spot pair (mainnet: 215 perps + 11 spot), searchable picker with favorites
+- **Indicators in Pine Script**: Supertrend, EMA, SMA, Bollinger, VWAP, RSI, MACD, Stochastic, ATR — plus
+  **user-imported TradingView Pine Script** indicators/strategies (paste or upload, edit inputs, share)
 - **Auto-trading bot**: trades from any indicator script that outputs `signals` (incl. user-imported
   ones). Paper mode by default, backtest preview, per-trade size, TP/SL, max trades/day, loss limit
 - **Telegram alerts**: price crosses and "position close to liquidation" warnings
@@ -55,45 +56,50 @@ Options: `NETWORK=mainnet`, `DOMAIN=trade.yourdomain.com`, `HTTPS=0` — e.g.
 The `alerts` container (`alerts/server.js`, no dependencies) links each browser to a Telegram chat
 via a random secret, checks Lighter mark prices every 10s, and stores alerts in a Docker volume.
 
-## Custom indicators
+## Custom indicators (Pine Script)
 
-Indicators are small JavaScript scripts. Users click **ƒx Indicators → + New / paste** (or import a
-`.js` file). Each script receives `candles`, `inputs` and the `ta` helper library and returns lines:
+Users import indicators and strategies as **Pine Script** (TradingView, v4–v6): **ƒx Indicators →
++ Import Pine Script** (paste) or **Upload .pine file**. The editor checks the script live and shows
+the name, its settings and any error with its line number. Settings declared with `input.*` become
+editable fields (numbers, on/off, dropdowns, price source). All built-in indicators are Pine too, so
+"Copy as custom" is a quick way to start.
 
-```js
-// @name Fast/slow EMA cross
-// @input fast 9
-// @input slow 21
-const close = ta.close(candles);
-return {
-  pane: 'overlay',                   // or 'separate' for a panel under the chart
-  plots: [
-    { name: 'Fast', values: ta.ema(close, inputs.fast), color: '#f5a524' },
-    { name: 'Slow', values: ta.ema(close, inputs.slow) },
-  ],
-  // levels: [30, 70]                // dashed lines in a separate pane
-};
-```
+Supported (`src/indicators/pine/`, a parser + interpreter, no `eval`):
+- `indicator()` / `study()` / `strategy()`, `input`, `input.int/float/bool/string/source/…` (with `options`, `minval`)
+- `var`, `:=`, `+=`…, `[n]` history, `if / else if / else`, `if`/`switch` as expressions, `for`, `while`,
+  user functions (single-line and block, tuple returns), tuple assignment `[a, b] = …`
+- `ta.*`: sma ema rma wma vwma hma linreg stdev variance dev highest lowest (bars) change mom roc cum
+  crossover crossunder cross rising falling barssince valuewhen rsi macd bb bbw kc tr atr cci stoch mfi
+  vwap obv supertrend dmi pivothigh pivotlow — matching TradingView's seeding (e.g. `ta.ema` vs `ta.rma`)
+- `math.*`, `nz`, `na`, `fixnan`, `color.*`/`color.new`, `str.tostring`, `plot`, `hline`, `bar_index`,
+  `barstate.*`, `syminfo.mintick`, `timeframe.period`, `strategy.position_size`
+- Drawings and cosmetics (`label.*`, `line.*`, `box.*`, `table.*`, `fill`, `bgcolor`, `barcolor`) are skipped
+- Not available: `request.security` (other symbols/timeframes), libraries (`import`), user types/methods, arrays
 
-`ta` has `sma ema rma wma stdev highest lowest change rsi macd bb atr vwap stoch` and
-`close/open/high/low/volume/hl2/hlc3(candles)`. Built-ins use the same format — "Copy as custom"
-is a quick way to start.
+Tested on popular community scripts (UT Bot Alerts, Squeeze Momentum, Supertrend strategy, RSI+MA v6).
 
 ### Auto-trading from an indicator
 
-Add a `signals` array (one entry per candle: `'long'`, `'short'`, `'exit'` or `null`) and the script
-can drive the bot (**Bot** tab). Signals also show as L/S arrows on the chart. Two examples ship
-built in: *Strategy: EMA cross* and *Strategy: RSI reversal*.
+A script can drive the bot (**Bot** tab) when it produces buy/sell signals, in any of these ways:
+- **Strategy scripts:** `strategy.entry("L", strategy.long)`, `strategy.entry("S", strategy.short)`,
+  `strategy.close(...)` / `strategy.close_all()` (`strategy.exit` is ignored, the bot's TP/SL apply)
+- **Indicator scripts:** `alertcondition(cond, "Buy …")` / `alertcondition(cond, "Sell …")`, or
+  `plotshape(cond, title="Buy")` / `title="Sell"` (words like buy/long, sell/short, exit/close)
 
-```js
-const fast = ta.ema(ta.close(candles), inputs.fast), slow = ta.ema(ta.close(candles), inputs.slow);
-return {
-  pane: 'overlay',
-  plots: [{ name: 'Fast', values: fast }, { name: 'Slow', values: slow }],
-  signals: fast.map((f, i) => i && f > slow[i] && fast[i - 1] <= slow[i - 1] ? 'long'
-                         : i && f < slow[i] && fast[i - 1] >= slow[i - 1] ? 'short' : null),
-};
+Signals show as L/S arrows on the chart. Built-in examples: *Strategy: EMA cross*, *Strategy: RSI reversal*.
+
+```pine
+//@version=5
+strategy("EMA cross", overlay=true)
+f = ta.ema(close, input.int(9, "Fast"))
+s = ta.ema(close, input.int(21, "Slow"))
+if ta.crossover(f, s)
+    strategy.entry("Long", strategy.long)
+if ta.crossunder(f, s)
+    strategy.entry("Short", strategy.short)
 ```
+
+(JavaScript indicators returning `{ plots, signals }` are still accepted for advanced use.)
 
 How the bot behaves (`src/autotrade/`):
 - Runs **in the user's browser** with their own key — nothing is stored on the server. It pauses if
@@ -106,9 +112,9 @@ How the bot behaves (`src/autotrade/`):
 - Manages the whole position on its market and cancels leftover TP/SL orders there before each entry.
 - The backtest (last 300 candles) fills at the next candle's open, unleveraged, no fees/funding.
 
-**Safety:** scripts run in a Web Worker, isolated from the page. They can't read `localStorage` (where
-the trading key is), touch the DOM or call the signer, and anything running longer than 2s is killed.
-Output is validated before drawing.
+**Safety:** Pine is interpreted (never `eval`-ed) and every script runs in a Web Worker isolated from
+the page: no `localStorage` (where the trading key is), no DOM, no signer. Loops are capped, anything
+running longer than 2s is killed, and output is validated before drawing.
 
 ## How it works
 

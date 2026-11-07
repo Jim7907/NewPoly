@@ -4,22 +4,8 @@
 // no access to the page DOM, localStorage (where the trading key lives) or the WASM
 // signer's memory, so a malicious script can't read keys or place orders. It also
 // can't freeze the UI: scripts that run longer than TIMEOUT_MS are killed.
-import { TA_SOURCE } from './ta-source.js';
-
 const TIMEOUT_MS = 2000;
-const MAX_PLOTS = 8;
-
-const WORKER_SOURCE = `${TA_SOURCE}
-self.onmessage = (e) => {
-  const { id, code, candles, inputs } = e.data;
-  try {
-    const fn = new Function('candles', 'inputs', 'ta', '"use strict";\\n' + code);
-    const out = fn(candles, inputs || {}, ta);
-    self.postMessage({ id, out: JSON.parse(JSON.stringify(out ?? null)) });
-  } catch (err) {
-    self.postMessage({ id, error: String((err && err.message) || err) });
-  }
-};`;
+const MAX_PLOTS = 12;
 
 // Jobs run one at a time so a hanging script only fails itself: its 2s timer starts
 // when it is sent, and on timeout the worker is replaced before the next job runs.
@@ -30,9 +16,7 @@ const queue = [];
 
 function getWorker() {
   if (worker) return worker;
-  const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
-  worker = new Worker(url);
-  URL.revokeObjectURL(url);
+  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
     if (!current || e.data.id !== current.id) return;
     const job = current;
@@ -74,11 +58,16 @@ function next() {
   getWorker().postMessage(current.message);
 }
 
-/** Runs one indicator. Resolves to a normalized result (see normalizeResult). */
-export function runIndicator(code, candles, inputs) {
+/**
+ * Runs one indicator ({ code, inputs, lang: 'pine' | 'js' }) over candles.
+ * Resolves to a normalized result (see normalizeResult).
+ * @param opts { priceDecimals, resolution, ticker } — exposed to Pine as syminfo/timeframe
+ */
+export function runIndicator(indicator, candles, opts = {}) {
+  const { code, inputs, lang = 'js' } = indicator;
   return new Promise((resolve, reject) => {
     const id = ++seq;
-    queue.push({ id, resolve, reject, length: candles.length, message: { id, code, candles, inputs } });
+    queue.push({ id, resolve, reject, length: candles.length, message: { id, lang, code, candles, inputs, opts } });
     next();
   });
 }
@@ -103,7 +92,7 @@ export function normalizeResult(out, length) {
   if (!out || typeof out !== 'object' || (!Array.isArray(out.plots) && !Array.isArray(out.signals))) {
     throw new Error('Indicator must return { pane, plots: [...] } (and optionally signals: [...])');
   }
-  if (out.signals !== undefined && (!Array.isArray(out.signals) || out.signals.length !== length)) {
+  if (out.signals !== undefined && out.signals !== null && (!Array.isArray(out.signals) || out.signals.length !== length)) {
     throw new Error(`signals must have one entry per candle (${length})`);
   }
   return {

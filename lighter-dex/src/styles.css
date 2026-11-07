@@ -267,6 +267,9 @@ td { padding: 6px 12px; border-bottom: 1px solid var(--grid); white-space: nowra
 .ind-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; flex: 1; min-width: 160px; }
 .ind-inputs { display: flex; gap: 6px; flex-wrap: wrap; }
 .ind-input { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
+.ind-input select { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 3px 4px; color: var(--text); }
+.ind-input input.wide { width: 90px; }
+.ind-input input[type='checkbox'] { width: auto; }
 .ind-input input { width: 52px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; color: var(--text); }
 .ind-actions { display: flex; gap: 10px; }
 .ind-item .msg { flex-basis: 100%; }

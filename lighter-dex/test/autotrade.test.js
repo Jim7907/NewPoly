@@ -5,7 +5,7 @@ import {
 } from '../src/autotrade/engine.js';
 import { normalizeResult, normalizeSignal } from '../src/indicators/runner.js';
 import { BUILTINS } from '../src/indicators/builtins.js';
-import { TA_SOURCE } from '../src/indicators/ta-source.js';
+import { runPine } from '../src/indicators/pine/runtime.js';
 
 test('decideAction: both directions', () => {
   assert.deepEqual(decideAction('long', 0, 'both'), { close: false, open: 'long' });
@@ -98,13 +98,12 @@ test('signals: aliases and validation', () => {
 });
 
 test('built-in strategies emit signals on oscillating prices', () => {
-  const ta = new Function(`${TA_SOURCE}; return ta;`)();
   const candles = Array.from({ length: 300 }, (_, i) => {
     const p = 100 + Math.sin(i / 8) * 8;
     return { time: i * 900, open: p, high: p + 0.5, low: p - 0.5, close: p, volume: 1 };
   });
   for (const s of BUILTINS.filter((b) => b.strategy)) {
-    const r = normalizeResult(new Function('candles', 'inputs', 'ta', s.code)(candles, s.inputs, ta), candles.length);
+    const r = normalizeResult(runPine(s.code, candles), candles.length);
     const n = r.signals.filter(Boolean).length;
     assert.ok(n >= 4, `${s.id} produced ${n} signals`);
     const bt = backtest(candles, r.signals, {});

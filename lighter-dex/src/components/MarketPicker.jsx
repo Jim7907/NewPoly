@@ -38,7 +38,7 @@ export default function MarketPicker({ markets, market, onSelect }) {
 
   return (
     <>
-      <button className="market-select" onClick={() => setOpen(true)} aria-haspopup="dialog">
+      <button className="market-select" onClick={() => { setKind('all'); setOpen(true); }} aria-haspopup="dialog">
         {market ? market.label : 'Markets'} <span className="muted">▾</span>
       </button>
       {open && (
@@ -50,7 +50,10 @@ export default function MarketPicker({ markets, market, onSelect }) {
                 className="input picker-search"
                 placeholder={`Search ${markets.length} markets (BTC, ETH, SOL…)`}
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  if (e.target.value && kind !== 'all') setKind('all'); // search always covers every market
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && list[0]) pick(list[0].market_id);
                   if (e.key === 'Escape') setOpen(false);

@@ -71,7 +71,7 @@ export default function Chart({ market, indicators }) {
     if (!data?.length) return undefined;
     let cancelled = false;
     const enabled = indicators.enabled;
-    Promise.allSettled(enabled.map((ind) => runIndicator(ind.code, data, ind.inputs))).then((settled) => {
+    Promise.allSettled(enabled.map((ind) => runIndicator(ind, data, { priceDecimals: market?.price_decimals, resolution, ticker: market?.symbol }))).then((settled) => {
       if (cancelled) return;
       const errs = {};
       const ok = [];

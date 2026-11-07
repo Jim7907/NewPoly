@@ -1,145 +1,169 @@
-// Built-in indicators use the exact same script format users import, so they
-// double as examples. Each script gets: candles, inputs, ta (see ta-source.js).
+// Built-in indicators, written in Pine Script (the same format users import).
+// "Copy as custom" in the UI gives users these as a starting point.
+
+const pine = (strs, ...vals) => String.raw(strs, ...vals).replace(/^\n/, '');
 
 export const BUILTINS = [
   {
     id: 'ema',
-    name: 'EMA',
-    inputs: { fast: 9, slow: 21 },
-    code: `return {
-  pane: 'overlay',
-  plots: [
-    { name: 'EMA ' + inputs.fast, values: ta.ema(ta.close(candles), inputs.fast), color: '#f5a524' },
-    { name: 'EMA ' + inputs.slow, values: ta.ema(ta.close(candles), inputs.slow), color: '#7c6cff' },
-  ],
-};`,
+    code: pine`
+//@version=5
+indicator("EMA", overlay=true)
+fast = input.int(9, "Fast length", minval=1)
+slow = input.int(21, "Slow length", minval=1)
+plot(ta.ema(close, fast), "EMA fast", color=#f5a524)
+plot(ta.ema(close, slow), "EMA slow", color=#7c6cff)`,
   },
   {
     id: 'sma',
-    name: 'SMA',
-    inputs: { length: 50 },
-    code: `return { pane: 'overlay', plots: [{ name: 'SMA ' + inputs.length, values: ta.sma(ta.close(candles), inputs.length), color: '#22b8cf' }] };`,
+    code: pine`
+//@version=5
+indicator("SMA", overlay=true)
+length = input.int(50, "Length", minval=1)
+src = input.source(close, "Source")
+plot(ta.sma(src, length), "SMA", color=#22b8cf)`,
   },
   {
     id: 'bb',
-    name: 'Bollinger Bands',
-    inputs: { length: 20, mult: 2 },
-    code: `const b = ta.bb(ta.close(candles), inputs.length, inputs.mult);
-return {
-  pane: 'overlay',
-  plots: [
-    { name: 'Upper', values: b.upper, color: '#8a93a6' },
-    { name: 'Basis', values: b.middle, color: '#f5a524' },
-    { name: 'Lower', values: b.lower, color: '#8a93a6' },
-  ],
-};`,
+    code: pine`
+//@version=5
+indicator("Bollinger Bands", overlay=true)
+length = input.int(20, "Length", minval=1)
+mult = input.float(2.0, "StdDev")
+[basis, upper, lower] = ta.bb(close, length, mult)
+plot(upper, "Upper", color=#8a93a6)
+plot(basis, "Basis", color=#f5a524)
+plot(lower, "Lower", color=#8a93a6)`,
   },
   {
     id: 'vwap',
-    name: 'VWAP (daily)',
-    inputs: {},
-    code: `return { pane: 'overlay', plots: [{ name: 'VWAP', values: ta.vwap(candles), color: '#e64980' }] };`,
+    code: pine`
+//@version=5
+indicator("VWAP (daily)", overlay=true)
+plot(ta.vwap(hlc3), "VWAP", color=#e64980)`,
+  },
+  {
+    id: 'supertrend',
+    code: pine`
+//@version=5
+indicator("Supertrend", overlay=true)
+factor = input.float(3.0, "Factor")
+atrPeriod = input.int(10, "ATR length")
+[st, direction] = ta.supertrend(factor, atrPeriod)
+plot(direction < 0 ? st : na, "Up trend", color=#2ebd85)
+plot(direction > 0 ? st : na, "Down trend", color=#f0465a)`,
   },
   {
     id: 'rsi',
-    name: 'RSI',
-    inputs: { length: 14 },
-    code: `return { pane: 'separate', levels: [30, 70], plots: [{ name: 'RSI ' + inputs.length, values: ta.rsi(ta.close(candles), inputs.length), color: '#7c6cff' }] };`,
+    code: pine`
+//@version=5
+indicator("RSI")
+length = input.int(14, "Length", minval=1)
+plot(ta.rsi(close, length), "RSI", color=#7c6cff)
+hline(70)
+hline(30)`,
   },
   {
     id: 'macd',
-    name: 'MACD',
-    inputs: { fast: 12, slow: 26, signal: 9 },
-    code: `const m = ta.macd(ta.close(candles), inputs.fast, inputs.slow, inputs.signal);
-return {
-  pane: 'separate',
-  levels: [0],
-  plots: [
-    { name: 'Histogram', values: m.hist, type: 'histogram' },
-    { name: 'MACD', values: m.macd, color: '#22b8cf' },
-    { name: 'Signal', values: m.signal, color: '#f5a524' },
-  ],
-};`,
+    code: pine`
+//@version=5
+indicator("MACD")
+fast = input.int(12, "Fast")
+slow = input.int(26, "Slow")
+signal = input.int(9, "Signal")
+[m, s, h] = ta.macd(close, fast, slow, signal)
+plot(h, "Histogram", style=plot.style_histogram)
+plot(m, "MACD", color=#22b8cf)
+plot(s, "Signal", color=#f5a524)
+hline(0)`,
   },
   {
     id: 'stoch',
-    name: 'Stochastic',
-    inputs: { length: 14, smoothK: 3, smoothD: 3 },
-    code: `const s = ta.stoch(candles, inputs.length, inputs.smoothK, inputs.smoothD);
-return { pane: 'separate', levels: [20, 80], plots: [{ name: '%K', values: s.k, color: '#22b8cf' }, { name: '%D', values: s.d, color: '#f5a524' }] };`,
-  },
-  // ---- strategies: same format plus `signals` (one per candle) for the auto-trader ----
-  {
-    id: 'ema-cross',
-    name: 'Strategy: EMA cross',
-    strategy: true,
-    inputs: { fast: 9, slow: 21 },
-    code: `const close = ta.close(candles);
-const fast = ta.ema(close, inputs.fast), slow = ta.ema(close, inputs.slow);
-// long when fast crosses above slow, short when it crosses below
-const signals = close.map((_, i) => {
-  if (i === 0 || fast[i] === null || slow[i] === null || fast[i - 1] === null || slow[i - 1] === null) return null;
-  if (fast[i - 1] <= slow[i - 1] && fast[i] > slow[i]) return 'long';
-  if (fast[i - 1] >= slow[i - 1] && fast[i] < slow[i]) return 'short';
-  return null;
-});
-return {
-  pane: 'overlay',
-  signals,
-  plots: [
-    { name: 'Fast', values: fast, color: '#f5a524' },
-    { name: 'Slow', values: slow, color: '#7c6cff' },
-  ],
-};`,
-  },
-  {
-    id: 'rsi-revert',
-    name: 'Strategy: RSI reversal',
-    strategy: true,
-    inputs: { length: 14, low: 30, high: 70 },
-    code: `const r = ta.rsi(ta.close(candles), inputs.length);
-// long when RSI climbs back above "low", short when it drops back below "high",
-// exit when RSI crosses 50 against the trade
-let side = null;
-const signals = r.map((v, i) => {
-  const p = r[i - 1];
-  if (v === null || p === null || p === undefined) return null;
-  if (p < inputs.low && v >= inputs.low) { side = 'long'; return 'long'; }
-  if (p > inputs.high && v <= inputs.high) { side = 'short'; return 'short'; }
-  if (side === 'long' && p >= 50 && v < 50) { side = null; return 'exit'; }
-  if (side === 'short' && p <= 50 && v > 50) { side = null; return 'exit'; }
-  return null;
-});
-return { pane: 'separate', levels: [inputs.low, 50, inputs.high], signals, plots: [{ name: 'RSI', values: r, color: '#7c6cff' }] };`,
+    code: pine`
+//@version=5
+indicator("Stochastic")
+length = input.int(14, "%K length")
+smoothK = input.int(3, "%K smoothing")
+smoothD = input.int(3, "%D smoothing")
+k = ta.sma(ta.stoch(close, high, low, length), smoothK)
+d = ta.sma(k, smoothD)
+plot(k, "%K", color=#22b8cf)
+plot(d, "%D", color=#f5a524)
+hline(80)
+hline(20)`,
   },
   {
     id: 'atr',
-    name: 'ATR',
-    inputs: { length: 14 },
-    code: `return { pane: 'separate', plots: [{ name: 'ATR ' + inputs.length, values: ta.atr(candles, inputs.length), color: '#e64980' }] };`,
+    code: pine`
+//@version=5
+indicator("ATR")
+length = input.int(14, "Length")
+plot(ta.atr(length), "ATR", color=#e64980)`,
+  },
+  // ---- strategies: drive the auto-trader via strategy.entry / strategy.close ----
+  {
+    id: 'ema-cross',
+    strategy: true,
+    code: pine`
+//@version=5
+strategy("Strategy: EMA cross", overlay=true)
+fast = input.int(9, "Fast length")
+slow = input.int(21, "Slow length")
+f = ta.ema(close, fast)
+s = ta.ema(close, slow)
+if ta.crossover(f, s)
+    strategy.entry("Long", strategy.long)
+if ta.crossunder(f, s)
+    strategy.entry("Short", strategy.short)
+plot(f, "Fast", color=#f5a524)
+plot(s, "Slow", color=#7c6cff)`,
+  },
+  {
+    id: 'rsi-revert',
+    strategy: true,
+    code: pine`
+//@version=5
+strategy("Strategy: RSI reversal")
+length = input.int(14, "RSI length")
+oversold = input.int(30, "Oversold")
+overbought = input.int(70, "Overbought")
+r = ta.rsi(close, length)
+// long when RSI climbs back above oversold, short when it drops back below overbought,
+// exit when RSI crosses 50 against the trade
+var int side = 0
+if ta.crossover(r, oversold)
+    strategy.entry("Long", strategy.long)
+    side := 1
+else if ta.crossunder(r, overbought)
+    strategy.entry("Short", strategy.short)
+    side := -1
+else if side == 1 and ta.crossunder(r, 50)
+    strategy.close_all()
+    side := 0
+else if side == -1 and ta.crossover(r, 50)
+    strategy.close_all()
+    side := 0
+plot(r, "RSI", color=#7c6cff)
+hline(overbought)
+hline(50)
+hline(oversold)`,
   },
 ];
 
-export const CUSTOM_TEMPLATE = `// @name My indicator
-// @input length 20
-//
-// Available: candles [{ time, open, high, low, close, volume }], inputs, ta
-// ta: sma ema rma wma stdev highest lowest change rsi macd bb atr vwap stoch
-//     close(candles) open() high() low() volume() hl2() hlc3()
-// Return one value per candle (null = nothing drawn).
-
-const close = ta.close(candles);
-const basis = ta.sma(close, inputs.length);
-const dev = ta.stdev(close, inputs.length);
-
-return {
-  pane: 'overlay',            // or 'separate' for its own panel below the chart
-  plots: [
-    { name: 'Basis', values: basis, color: '#f5a524' },
-    { name: 'Upper', values: basis.map((b, i) => b === null ? null : b + 2 * dev[i]) },
-  ],
-  // levels: [30, 70],         // horizontal lines (separate pane only)
-  // Auto-trading: add one entry per candle: 'long' | 'short' | 'exit' | null
-  // signals: close.map((c, i) => (c > basis[i] + 2 * dev[i] ? 'short' : null)),
-};
+export const CUSTOM_TEMPLATE = `//@version=5
+// Paste any TradingView Pine Script indicator or strategy here.
+// To let the auto-trader use it, call strategy.entry() / strategy.close(),
+// or add alertcondition(cond, "Buy") / alertcondition(cond, "Sell").
+strategy("My strategy", overlay=true)
+length = input.int(20, "Length")
+mult = input.float(2.0, "Band width")
+basis = ta.sma(close, length)
+dev = mult * ta.stdev(close, length)
+plot(basis, "Basis", color=color.orange)
+plot(basis + dev, "Upper")
+plot(basis - dev, "Lower")
+if ta.crossover(close, basis - dev)
+    strategy.entry("Long", strategy.long)
+if ta.crossunder(close, basis + dev)
+    strategy.entry("Short", strategy.short)
 `;

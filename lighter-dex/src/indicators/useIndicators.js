@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { BUILTINS } from './builtins.js';
 import { parseHeader } from './runner.js';
+import { pineMeta } from './pine/runtime.js';
+import { looksLikePine } from './pine/parser.js';
 
 const KEY = 'lighter-dex:indicators:v1';
-const MAX_CODE = 20000;
+const MAX_CODE = 30000;
 
 function load() {
   try {
@@ -11,6 +13,31 @@ function load() {
   } catch {
     return {};
   }
+}
+
+const defaultsOf = (inputMeta) => Object.fromEntries((inputMeta ?? []).map((i) => [i.name, i.default]));
+
+// Built-ins are Pine scripts; read their names and inputs once.
+const BUILTIN_INFO = BUILTINS.map((b) => {
+  const meta = pineMeta(b.code);
+  return { ...b, lang: 'pine', name: meta.title ?? b.id, inputMeta: meta.inputs, defaults: defaultsOf(meta.inputs) };
+});
+
+/** Reads name, language and inputs of pasted script text. Throws on Pine syntax errors. */
+export function describeScript(code) {
+  if (code.length > MAX_CODE) throw new Error('Script is too long (30 KB max)');
+  if (looksLikePine(code)) {
+    const meta = pineMeta(code);
+    return { lang: 'pine', name: meta.title, inputMeta: meta.inputs, defaults: defaultsOf(meta.inputs), isStrategy: meta.isStrategy };
+  }
+  const { name, inputs } = parseHeader(code);
+  return {
+    lang: 'js',
+    name,
+    inputMeta: Object.entries(inputs).map(([k, v]) => ({ name: k, title: k, type: 'float', default: v })),
+    defaults: inputs,
+    isStrategy: /signals\s*:/.test(code),
+  };
 }
 
 /** Indicator list = built-ins (with saved settings) + user-imported scripts. Persisted per browser. */
@@ -25,18 +52,18 @@ export function useIndicators() {
   }, [saved]);
 
   const list = [
-    ...BUILTINS.map((b) => ({
+    ...BUILTIN_INFO.map((b) => ({
       ...b,
       builtin: true,
       enabled: !!saved.builtins[b.id]?.enabled,
-      inputs: { ...b.inputs, ...(saved.builtins[b.id]?.inputs ?? {}) },
+      inputs: { ...b.defaults, ...pickKnown(saved.builtins[b.id]?.inputs, b.defaults) },
     })),
-    ...saved.custom.map((c) => ({ ...c, builtin: false })),
+    ...saved.custom.map((c) => ({ lang: 'js', inputMeta: [], ...c, builtin: false })),
   ];
 
   const toggle = useCallback((id) => {
     setSaved((s) => {
-      if (s.builtins[id] !== undefined || BUILTINS.some((b) => b.id === id)) {
+      if (BUILTINS.some((b) => b.id === id)) {
         const cur = s.builtins[id] ?? {};
         return { ...s, builtins: { ...s.builtins, [id]: { ...cur, enabled: !cur.enabled } } };
       }
@@ -44,30 +71,32 @@ export function useIndicators() {
     });
   }, []);
 
+  /** value is already typed (number / boolean / string) by the settings form. */
   const setInput = useCallback((id, key, value) => {
-    const v = Number(value);
-    if (!Number.isFinite(v)) return;
+    if (typeof value === 'number' && !Number.isFinite(value)) return;
     setSaved((s) => {
       if (BUILTINS.some((b) => b.id === id)) {
         const cur = s.builtins[id] ?? {};
-        return { ...s, builtins: { ...s.builtins, [id]: { ...cur, inputs: { ...(cur.inputs ?? {}), [key]: v } } } };
+        return { ...s, builtins: { ...s.builtins, [id]: { ...cur, inputs: { ...(cur.inputs ?? {}), [key]: value } } } };
       }
-      return { ...s, custom: s.custom.map((c) => (c.id === id ? { ...c, inputs: { ...c.inputs, [key]: v } } : c)) };
+      return { ...s, custom: s.custom.map((c) => (c.id === id ? { ...c, inputs: { ...c.inputs, [key]: value } } : c)) };
     });
   }, []);
 
-  /** Adds or replaces a custom indicator from script text. Returns its id. */
+  /** Adds or replaces a custom indicator from script text (Pine or JS). Returns its id. Throws on errors. */
   const saveCustom = useCallback((code, id) => {
-    if (code.length > MAX_CODE) throw new Error('Indicator script is too long (20 KB max)');
-    const { name, inputs } = parseHeader(code);
+    const info = describeScript(code);
     const newId = id ?? `c-${Date.now()}`;
     setSaved((s) => {
       const existing = s.custom.find((c) => c.id === newId);
       const entry = {
         id: newId,
-        name: name ?? existing?.name ?? 'Custom indicator',
+        lang: info.lang,
+        name: (info.name ?? existing?.name ?? 'Custom indicator').slice(0, 60),
         code,
-        inputs: { ...inputs, ...(existing?.inputs ?? {}) },
+        inputMeta: info.inputMeta,
+        inputs: { ...info.defaults, ...pickKnown(existing?.inputs, info.defaults) },
+        strategy: info.isStrategy,
         enabled: existing ? existing.enabled : true,
       };
       return { ...s, custom: existing ? s.custom.map((c) => (c.id === newId ? entry : c)) : [...s.custom, entry] };
@@ -80,4 +109,10 @@ export function useIndicators() {
   }, []);
 
   return { list, enabled: list.filter((i) => i.enabled), toggle, setInput, saveCustom, remove };
+}
+
+/** Keep only saved values whose input still exists (scripts can change). */
+function pickKnown(saved, defaults) {
+  if (!saved) return {};
+  return Object.fromEntries(Object.entries(saved).filter(([k]) => k in defaults));
 }

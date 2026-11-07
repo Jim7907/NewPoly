@@ -5,6 +5,7 @@ import { GROUPING, ORDER_TYPE, TIME_IN_FORCE } from '../src/lighter/config.js';
 import { pnlChange, summarizeFills, toFill } from '../src/lighter/history.js';
 import { TA_SOURCE } from '../src/indicators/ta-source.js';
 import { BUILTINS } from '../src/indicators/builtins.js';
+import { runPine } from '../src/indicators/pine/runtime.js';
 import { normalizeResult, parseHeader } from '../src/indicators/runner.js';
 import { liqWarnings, parseAlertRequest, priceAlertHit } from '../alerts/logic.js';
 
@@ -113,8 +114,7 @@ test('ta.rsi stays within 0..100 and is 100 on pure uptrend', () => {
 
 test('every built-in indicator runs and returns valid output', () => {
   for (const b of BUILTINS) {
-    const out = new Function('candles', 'inputs', 'ta', b.code)(candles, b.inputs, ta);
-    const r = normalizeResult(out, candles.length);
+    const r = normalizeResult(runPine(b.code, candles), candles.length);
     assert.ok(r.plots.length > 0, b.id);
     assert.ok(r.plots.every((p) => p.values.some((v) => v !== null)), `${b.id} has values`);
   }

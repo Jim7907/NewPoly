@@ -1,5 +1,8 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { CUSTOM_TEMPLATE } from '../indicators/builtins.js';
+import { describeScript } from '../indicators/useIndicators.js';
+
+const SOURCES = ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4', 'volume'];
 
 export default function IndicatorsPanel({ indicators, errors, onClose }) {
   const [editing, setEditing] = useState(null); // { id?: string, code: string }
@@ -7,13 +10,23 @@ export default function IndicatorsPanel({ indicators, errors, onClose }) {
   const fileRef = useRef(null);
   const { list, toggle, setInput, saveCustom, remove } = indicators;
 
+  // live check while typing: language, name, inputs, or the first error
+  const check = useMemo(() => {
+    if (!editing?.code?.trim()) return null;
+    try {
+      return { ok: true, ...describeScript(editing.code) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }, [editing?.code]);
+
   const save = () => {
     try {
       saveCustom(editing.code, editing.id);
       setEditing(null);
       setMsg(null);
     } catch (e) {
-      setMsg(e.message);
+      setMsg({ ok: false, text: e.message });
     }
   };
 
@@ -21,16 +34,16 @@ export default function IndicatorsPanel({ indicators, errors, onClose }) {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
-    if (f.size > 20000) return setMsg('File too large (20 KB max)');
+    if (f.size > 30000) return setMsg({ ok: false, text: 'File too large (30 KB max)' });
     setEditing({ code: await f.text() });
   };
 
   const copy = async (code) => {
     try {
       await navigator.clipboard.writeText(code);
-      setMsg('Copied — share it with anyone, they can paste it under "Import"');
+      setMsg({ ok: true, text: 'Copied. Anyone can paste it under "+ Import Pine Script" (or into TradingView).' });
     } catch {
-      setMsg('Copy failed — select the code in the editor instead');
+      setMsg({ ok: false, text: 'Copy failed. Open Edit and copy the code from there.' });
     }
   };
 
@@ -45,29 +58,45 @@ export default function IndicatorsPanel({ indicators, errors, onClose }) {
         {editing ? (
           <div className="sheet-body">
             <p className="muted small">
-              Paste an indicator script (JavaScript). It runs in an isolated background worker with no access to your
-              wallet, keys or orders. Only import code you understand or trust.
+              Paste a <b>Pine Script</b> indicator or strategy from TradingView (v4–v6). Supported: inputs, <code>ta.*</code>,
+              <code> math.*</code>, <code>plot</code>, <code>hline</code>, <code>if/for/switch</code>, <code>var</code>, functions.
+              Drawings (labels, lines, tables) are skipped; <code>request.security</code> isn&apos;t available.
+              For the auto-trader, use <code>strategy.entry/close</code> or <code>alertcondition(cond, &quot;Buy&quot;/&quot;Sell&quot;)</code>.
+              Scripts run isolated from your wallet and keys.
             </p>
             <textarea
               className="code"
               spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
               value={editing.code}
               onChange={(e) => setEditing({ ...editing, code: e.target.value })}
             />
-            {msg && <div className="msg error">{msg}</div>}
+            {check && (
+              check.ok ? (
+                <div className="msg ok small">
+                  ✓ {check.lang === 'pine' ? 'Pine Script' : 'JavaScript'} · “{check.name ?? 'Untitled'}”
+                  {check.inputMeta.length > 0 && ` · ${check.inputMeta.length} setting(s)`}
+                  {check.isStrategy ? ' · can drive the auto-trader' : ''}
+                </div>
+              ) : (
+                <div className="msg error small">{check.error}</div>
+              )
+            )}
+            {msg && !msg.ok && <div className="msg error">{msg.text}</div>}
             <div className="row-gap">
-              <button className="btn btn-primary" onClick={save}>Save & show</button>
+              <button className="btn btn-primary" onClick={save} disabled={check && !check.ok}>Save & show</button>
               <button className="btn" onClick={() => setEditing(null)}>Cancel</button>
             </div>
           </div>
         ) : (
           <div className="sheet-body">
             <div className="row-gap">
-              <button className="btn btn-primary" onClick={() => setEditing({ code: CUSTOM_TEMPLATE })}>+ New / paste</button>
-              <button className="btn" onClick={() => fileRef.current?.click()}>Import .js file</button>
-              <input ref={fileRef} type="file" accept=".js,.txt,text/javascript,text/plain" hidden onChange={onFile} />
+              <button className="btn btn-primary" onClick={() => setEditing({ code: CUSTOM_TEMPLATE })}>+ Import Pine Script</button>
+              <button className="btn" onClick={() => fileRef.current?.click()}>Upload .pine file</button>
+              <input ref={fileRef} type="file" accept=".pine,.txt,.js,text/plain" hidden onChange={onFile} />
             </div>
-            {msg && <div className="msg ok">{msg}</div>}
+            {msg && <div className={`msg ${msg.ok ? 'ok' : 'error'}`}>{msg.text}</div>}
 
             <div className="ind-list">
               {list.map((ind) => (
@@ -75,19 +104,18 @@ export default function IndicatorsPanel({ indicators, errors, onClose }) {
                   <label className="ind-toggle">
                     <input type="checkbox" checked={ind.enabled} onChange={() => toggle(ind.id)} />
                     <span>{ind.name}</span>
-                    {!ind.builtin && <span className="tag">custom</span>}
+                    {!ind.builtin && <span className="tag">{ind.lang === 'pine' ? 'pine' : 'js'}</span>}
+                    {ind.strategy && <span className="tag tag-up">strategy</span>}
                   </label>
                   <div className="ind-inputs">
-                    {Object.entries(ind.inputs ?? {}).map(([k, v]) => (
-                      <label key={k} className="ind-input">
-                        {k}
-                        <input inputMode="decimal" defaultValue={v} onBlur={(e) => setInput(ind.id, k, e.target.value)} />
-                      </label>
-                    ))}
+                    {(ind.inputMeta?.length ? ind.inputMeta : Object.keys(ind.inputs ?? {}).map((k) => ({ name: k, title: k, type: 'float' })))
+                      .map((meta) => (
+                        <InputField key={`${ind.id}-${meta.name}`} meta={meta} value={ind.inputs?.[meta.name]} onChange={(v) => setInput(ind.id, meta.name, v)} />
+                      ))}
                   </div>
                   <div className="ind-actions">
                     {ind.builtin ? (
-                      <button className="link small" onClick={() => setEditing({ code: `// @name ${ind.name} (copy)\n${Object.entries(ind.inputs).map(([k, v]) => `// @input ${k} ${v}`).join('\n')}\n${ind.code}` })}>
+                      <button className="link small" onClick={() => setEditing({ code: ind.code.replace(/(indicator|strategy)\("([^"]*)"/, '$1("$2 (copy)"') })}>
                         Copy as custom
                       </button>
                     ) : (
@@ -106,5 +134,48 @@ export default function IndicatorsPanel({ indicators, errors, onClose }) {
         )}
       </div>
     </div>
+  );
+}
+
+function InputField({ meta, value, onChange }) {
+  const label = String(meta.title ?? meta.name).slice(0, 24);
+  if (meta.type === 'bool') {
+    return (
+      <label className="ind-input">
+        <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} /> {label}
+      </label>
+    );
+  }
+  if (meta.type === 'source' || (meta.options && meta.options.length)) {
+    const opts = meta.type === 'source' ? SOURCES : meta.options;
+    return (
+      <label className="ind-input">
+        {label}
+        <select value={String(value ?? meta.default)} onChange={(e) => onChange(meta.type === 'source' || typeof meta.default === 'string' ? e.target.value : Number(e.target.value))}>
+          {opts.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+        </select>
+      </label>
+    );
+  }
+  if (meta.type === 'string' || meta.type === 'color') {
+    return (
+      <label className="ind-input">
+        {label}
+        <input className="wide" defaultValue={value ?? ''} onBlur={(e) => onChange(e.target.value)} />
+      </label>
+    );
+  }
+  return (
+    <label className="ind-input">
+      {label}
+      <input
+        inputMode="decimal"
+        defaultValue={value}
+        onBlur={(e) => {
+          const v = Number(e.target.value);
+          if (Number.isFinite(v)) onChange(meta.type === 'int' ? Math.round(v) : v);
+        }}
+      />
+    </label>
   );
 }
