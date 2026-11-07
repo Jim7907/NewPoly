@@ -93,7 +93,8 @@ export async function getCandles(marketId, resolution = '15m', count = 300) {
         volume: c.v ?? 0,
       };
     })
-    .filter((c) => c.open !== undefined && c.close !== undefined);
+    .filter((c) => c.open !== undefined && c.close !== undefined)
+    .slice(-count);
 }
 
 // ---- accounts ----

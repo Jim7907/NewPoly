@@ -300,6 +300,8 @@ td { padding: 6px 12px; border-bottom: 1px solid var(--grid); white-space: nowra
 .kpis.compact { padding: 0; }
 .kpis.compact .kpi { background: var(--panel); min-width: 90px; flex: 1; }
 .panel-head.bare { padding: 0; border: 0; }
+.bt-trades { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.bt-trades li { padding: 3px 0; border-bottom: 1px solid var(--grid); }
 .bot-log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; font-size: 12px; }
 .bot-log li { padding: 4px 0; border-bottom: 1px solid var(--grid); word-break: break-word; }
 .log-trade { color: var(--text); font-weight: 600; }

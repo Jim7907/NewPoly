@@ -98,7 +98,7 @@ export function useAutoTrader({ lighter, markets, indicators }) {
     if (!ind) throw new Error('Strategy indicator was deleted');
     if (cfg.live && L.status !== 'ready') throw new Error('Wallet disconnected or trading not enabled');
 
-    const candles = await api.getCandles(market.market_id, cfg.resolution, 300);
+    const candles = await api.getCandles(market.market_id, cfg.resolution, 500);
     const result = await runIndicator(ind, candles, { priceDecimals: market.price_decimals, resolution: cfg.resolution, ticker: market.symbol });
     if (!result.signals) throw new Error(`"${ind.name}" returns no signals — it can't drive the bot`);
     const now = Math.floor(Date.now() / 1000);
@@ -286,6 +286,14 @@ export function useAutoTrader({ lighter, markets, indicators }) {
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
   }, [loop, addLog]);
+
+  // The saved market may not exist on this network (testnet and mainnet use different ids):
+  // fall back to the most active perp.
+  useEffect(() => {
+    if (running || !markets.length) return;
+    const perps = markets.filter((m) => m.kind === 'perp');
+    if (perps.length && !perps.some((m) => m.market_id === Number(config.marketId))) setConfig({ marketId: perps[0].market_id });
+  }, [markets, config.marketId, running, setConfig]);
 
   useEffect(() => {
     if (running && config.live && lighter.status !== 'ready') stop('wallet disconnected');

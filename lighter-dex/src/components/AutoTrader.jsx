@@ -3,9 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import * as api from '../lighter/api.js';
 import { runIndicator } from '../indicators/runner.js';
 import { backtest } from '../autotrade/engine.js';
-import { fmtUsd } from '../lighter/units.js';
+import { fmtNum, fmtUsd } from '../lighter/units.js';
 
 const RESOLUTIONS = ['1m', '5m', '15m', '1h', '4h', '1d'];
+const BT_CANDLES = 500; // Lighter returns at most 500 candles per request
+const fmtDate = (sec) => new Date(sec * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 
 export default function AutoTrader({ bot, lighter, markets, indicators }) {
   const { config: cfg, setConfig, running } = bot;
@@ -13,17 +15,20 @@ export default function AutoTrader({ bot, lighter, markets, indicators }) {
   const ind = indicators.list.find((i) => i.id === cfg.indicatorId);
   const market = markets.find((m) => m.market_id === Number(cfg.marketId));
 
-  // Backtest preview on the last 300 candles with the current settings
+  // Backtest preview on the last BT_CANDLES candles with the current settings
   const preview = useQuery({
     queryKey: ['bt', cfg.marketId, cfg.resolution, ind?.code, JSON.stringify(ind?.inputs), cfg.mode, cfg.tpPct, cfg.slPct],
     enabled: !!ind && !!market,
     staleTime: 60000,
     retry: false,
     queryFn: async () => {
-      const candles = await api.getCandles(market.market_id, cfg.resolution, 300);
+      const candles = await api.getCandles(market.market_id, cfg.resolution, BT_CANDLES);
+      if (candles.length < 30) return { tooFew: candles.length };
       const r = await runIndicator(ind, candles, { priceDecimals: market.price_decimals, resolution: cfg.resolution, ticker: market.symbol });
+      const signalCount = r.signals ? r.signals.filter(Boolean).length : 0;
       if (!r.signals) return { noSignals: true };
-      return { ...backtest(candles, r.signals, { mode: cfg.mode, tpPct: cfg.tpPct, slPct: cfg.slPct }), from: candles[0]?.time };
+      const res = backtest(candles, r.signals, { mode: cfg.mode, tpPct: Number(cfg.tpPct) || 0, slPct: Number(cfg.slPct) || 0 });
+      return { ...res, signalCount, candles: candles.length, from: candles[0].time, to: candles.at(-1).time, flat: new Set(candles.map((c) => c.close)).size < 10 };
     },
   });
   const bt = preview.data;
@@ -35,7 +40,7 @@ export default function AutoTrader({ bot, lighter, markets, indicators }) {
     onChange: (e) => setConfig({ [k]: e.target.value === '' ? '' : Number(e.target.value) }),
   });
 
-  const canStart = !!ind && !!market && bt && !bt.noSignals && (!cfg.live || (confirmLive && lighter.status === 'ready'));
+  const canStart = !!ind && !!market && bt && !bt.noSignals && !bt.tooFew && (!cfg.live || (confirmLive && lighter.status === 'ready'));
 
   return (
     <div className="bot">
@@ -98,11 +103,24 @@ export default function AutoTrader({ bot, lighter, markets, indicators }) {
         </div>
 
         <div className="bot-card">
-          <div className="section-title">Backtest (last 300 candles)</div>
-          {preview.isLoading ? (
-            <p className="muted">Running…</p>
+          <div className="panel-head bare">
+            <span className="section-title">Backtest</span>
+            {market && ind && (
+              <button className="link small" disabled={preview.isFetching} onClick={() => preview.refetch()}>
+                {preview.isFetching ? 'Running…' : '↻ Re-run'}
+              </button>
+            )}
+          </div>
+          {!ind ? (
+            <p className="muted">Pick a strategy above.</p>
+          ) : !market ? (
+            <p className="muted">Pick a market above.</p>
+          ) : preview.isPending ? (
+            <p className="muted">Running “{ind.name}” on {market.label} {cfg.resolution}…</p>
           ) : preview.error ? (
-            <div className="msg error">{preview.error.message}</div>
+            <div className="msg error">Backtest failed: {preview.error.message}</div>
+          ) : bt?.tooFew ? (
+            <div className="msg error">Only {bt.tooFew} candles of history for {market.label} {cfg.resolution} — pick a longer timeframe or another market.</div>
           ) : bt?.noSignals ? (
             <div className="msg error">
               &quot;{ind?.name}&quot; gives no buy/sell signals, so it can&apos;t trade. Pick a strategy, or in your Pine script
@@ -111,12 +129,36 @@ export default function AutoTrader({ bot, lighter, markets, indicators }) {
             </div>
           ) : bt ? (
             <>
+              <p className="muted small">
+                {market.label} · {cfg.resolution} · {bt.candles} candles ({fmtDate(bt.from)} → {fmtDate(bt.to)}) · {bt.signalCount} signals
+              </p>
               <div className="kpis compact">
                 <div className="kpi"><div className="stat-label">Trades</div><div className="kpi-value">{bt.count}</div></div>
                 <div className="kpi"><div className="stat-label">Win rate</div><div className="kpi-value">{bt.winRate === null ? '—' : `${Math.round(bt.winRate * 100)}%`}</div></div>
                 <div className="kpi"><div className="stat-label">Return</div><div className={`kpi-value ${bt.totalReturnPct >= 0 ? 'up' : 'down'}`}>{bt.totalReturnPct >= 0 ? '+' : ''}{bt.totalReturnPct.toFixed(2)}%</div></div>
                 <div className="kpi"><div className="stat-label">Max drawdown</div><div className="kpi-value down">-{bt.maxDrawdownPct.toFixed(2)}%</div></div>
               </div>
+              {bt.count === 0 && (
+                <div className="msg error small">
+                  No completed trades in this period{bt.signalCount ? ' (signals didn’t lead to a closed trade yet)' : ''}.
+                  {bt.flat ? ' Prices here barely move (typical on testnet) — try mainnet or another market.' : ' Try a lower timeframe or different settings.'}
+                </div>
+              )}
+              {bt.count > 0 && (
+                <ul className="bt-trades">
+                  {bt.trades.slice(-5).reverse().map((t) => (
+                    <li key={`${t.entryTime}-${t.side}`}>
+                      <span className={t.side === 'long' ? 'up' : 'down'}>{t.side}</span>{' '}
+                      <span className="muted">{fmtDate(t.entryTime)}</span> {fmtNum(t.entry, market.price_decimals)} → {fmtNum(t.exit, market.price_decimals)}
+                      <span className={t.retPct >= 0 ? 'up' : 'down'}> {t.retPct >= 0 ? '+' : ''}{t.retPct.toFixed(2)}%</span>
+                      <span className="muted"> ({t.reason})</span>
+                    </li>
+                  ))}
+                  {bt.openPosition && (
+                    <li className="muted">open {bt.openPosition.side} since {fmtDate(bt.openPosition.entryTime)} @ {fmtNum(bt.openPosition.entry, market.price_decimals)}</li>
+                  )}
+                </ul>
+              )}
               <p className="muted small">Unleveraged, before fees/funding/slippage. Past results don&apos;t predict future ones.</p>
             </>
           ) : null}
