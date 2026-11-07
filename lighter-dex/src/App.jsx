@@ -8,6 +8,8 @@ import OrderForm from './components/OrderForm.jsx';
 import AccountTabs from './components/AccountTabs.jsx';
 import { useMarkets, useOrderBook } from './lighter/useMarketData.js';
 import { useLighter } from './lighter/useLighter.js';
+import { useIndicators } from './indicators/useIndicators.js';
+import { useAutoTrader } from './autotrade/useAutoTrader.js';
 import { loadSigner } from './lighter/signer.js';
 import { NETWORK } from './lighter/config.js';
 
@@ -29,6 +31,13 @@ export default function App() {
   const [sideRequest, setSideRequest] = useState(null);
   const [mobileTab, setMobileTab] = useState('chart');
   const lighter = useLighter();
+  const indicators = useIndicators(); // shared by the chart and the auto-trader
+  const bot = useAutoTrader({ lighter, markets, indicators }); // lives here so it keeps running across tabs
+  const [tabRequest, setTabRequest] = useState(null);
+  const openBot = () => {
+    setTabRequest({ tab: 'bot', at: Date.now() });
+    setMobileTab('account');
+  };
   const openPositions = (lighter.account?.positions ?? []).filter((p) => Number(p.position) !== 0).length;
 
   const startTrade = (side) => {
@@ -65,13 +74,18 @@ export default function App() {
           <span className={`badge ${NETWORK.chainId === 304 ? 'badge-main' : ''}`}>{NETWORK.name}</span>
         </div>
         <MarketHeader markets={markets} market={market} onSelect={setMarketId} />
+        {bot.running && (
+          <button className={`bot-badge ${bot.config.live ? 'live' : ''}`} onClick={openBot} title={bot.status}>
+            🤖 {bot.config.live ? 'LIVE bot' : 'Paper bot'}
+          </button>
+        )}
         <ConnectButton />
       </header>
 
       {marketsError && <div className="banner">Could not reach Lighter API: {marketsError.message}</div>}
 
       <main className="grid" data-mtab={mobileTab}>
-        <Chart market={market} />
+        <Chart market={market} indicators={indicators} />
         <div className="col-book">
           <OrderBook
             market={market}
@@ -87,6 +101,9 @@ export default function App() {
         <AccountTabs
           lighter={lighter}
           markets={markets}
+          bot={bot}
+          indicators={indicators}
+          tabRequest={tabRequest}
           onSelectMarket={(id) => {
             setMarketId(id);
             setMobileTab('chart');

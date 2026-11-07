@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { buildOrder, buildPositionTpSl, marketOrderPrice, pnlAt, validateTpSl } from '../lighter/orders.js';
 import { getPartnerStats } from '../lighter/api.js';
@@ -7,12 +7,16 @@ import { shortErr } from '../lighter/useLighter.js';
 import { fmtNum, fmtUsd } from '../lighter/units.js';
 import History, { Kpi } from './History.jsx';
 import Alerts from './Alerts.jsx';
+import AutoTrader from './AutoTrader.jsx';
 
 const isTrigger = (o) => Number(o.trigger_price) > 0 || /stop|take|profit/i.test(o.type ?? '');
 const triggerKind = (o) => (/take|profit/i.test(o.type ?? '') ? 'TP' : /stop/i.test(o.type ?? '') ? 'SL' : null);
 
-export default function AccountTabs({ lighter, markets, onSelectMarket }) {
+export default function AccountTabs({ lighter, markets, onSelectMarket, bot, indicators, tabRequest }) {
   const [tab, setTab] = useState('positions');
+  useEffect(() => {
+    if (tabRequest) setTab(tabRequest.tab);
+  }, [tabRequest]);
   const [pending, setPending] = useState(null);
   const [err, setErr] = useState(null);
   const [editing, setEditing] = useState(null); // market_id whose TP/SL editor is open
@@ -50,6 +54,7 @@ export default function AccountTabs({ lighter, markets, onSelectMarket }) {
   const TABS = [
     ['positions', `Positions (${positions.length})`],
     ['orders', `Orders (${orders.length})`],
+    ['bot', bot?.running ? '🤖 Bot ●' : '🤖 Bot'],
     ['history', 'History'],
     ['alerts', 'Alerts'],
     ['account', 'Account'],
@@ -68,6 +73,8 @@ export default function AccountTabs({ lighter, markets, onSelectMarket }) {
 
       {tab === 'alerts' ? (
         <Alerts lighter={lighter} markets={markets} />
+      ) : tab === 'bot' ? (
+        <AutoTrader bot={bot} lighter={lighter} markets={markets} indicators={indicators} />
       ) : !acct ? (
         <div className="empty muted">
           {lighter.status === 'disconnected' ? 'Connect a wallet to see your positions.' : 'No account data yet.'}

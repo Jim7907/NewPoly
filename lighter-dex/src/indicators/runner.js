@@ -85,20 +85,32 @@ export function runIndicator(code, candles, inputs) {
 
 const COLOR_RE = /^(#[0-9a-f]{3,8}|rgba?\([\d\s.,%]+\)|[a-z]{3,20})$/i;
 
+const SIGNAL_ALIASES = { long: 'long', buy: 'long', short: 'short', sell: 'short', exit: 'exit', close: 'exit', flat: 'exit' };
+
+/** 'long' | 'short' | 'exit' | null */
+export function normalizeSignal(s) {
+  return typeof s === 'string' ? SIGNAL_ALIASES[s.toLowerCase()] ?? null : null;
+}
+
 /**
  * Validates what a script returned. Expected shape:
  *   { pane: 'overlay' | 'separate',
  *     plots: [{ name, values: (number|null)[], color?, type?: 'line' | 'histogram' }],
- *     levels?: number[] }
+ *     levels?: number[],
+ *     signals?: ('long' | 'short' | 'exit' | null)[]   // per candle; used by the auto-trader }
  */
 export function normalizeResult(out, length) {
-  if (!out || typeof out !== 'object' || !Array.isArray(out.plots)) {
-    throw new Error('Indicator must return { pane, plots: [...] }');
+  if (!out || typeof out !== 'object' || (!Array.isArray(out.plots) && !Array.isArray(out.signals))) {
+    throw new Error('Indicator must return { pane, plots: [...] } (and optionally signals: [...])');
+  }
+  if (out.signals !== undefined && (!Array.isArray(out.signals) || out.signals.length !== length)) {
+    throw new Error(`signals must have one entry per candle (${length})`);
   }
   return {
+    signals: Array.isArray(out.signals) ? out.signals.map(normalizeSignal) : null,
     pane: out.pane === 'separate' ? 'separate' : 'overlay',
     levels: Array.isArray(out.levels) ? out.levels.filter((v) => Number.isFinite(v)).slice(0, 5) : [],
-    plots: out.plots.slice(0, MAX_PLOTS).map((p, i) => {
+    plots: (out.plots ?? []).slice(0, MAX_PLOTS).map((p, i) => {
       if (!p || !Array.isArray(p.values)) throw new Error(`Plot ${i + 1} has no values array`);
       if (p.values.length !== length) throw new Error(`Plot ${i + 1} has ${p.values.length} values, expected ${length}`);
       return {

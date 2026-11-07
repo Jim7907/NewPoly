@@ -68,6 +68,50 @@ return {
     code: `const s = ta.stoch(candles, inputs.length, inputs.smoothK, inputs.smoothD);
 return { pane: 'separate', levels: [20, 80], plots: [{ name: '%K', values: s.k, color: '#22b8cf' }, { name: '%D', values: s.d, color: '#f5a524' }] };`,
   },
+  // ---- strategies: same format plus `signals` (one per candle) for the auto-trader ----
+  {
+    id: 'ema-cross',
+    name: 'Strategy: EMA cross',
+    strategy: true,
+    inputs: { fast: 9, slow: 21 },
+    code: `const close = ta.close(candles);
+const fast = ta.ema(close, inputs.fast), slow = ta.ema(close, inputs.slow);
+// long when fast crosses above slow, short when it crosses below
+const signals = close.map((_, i) => {
+  if (i === 0 || fast[i] === null || slow[i] === null || fast[i - 1] === null || slow[i - 1] === null) return null;
+  if (fast[i - 1] <= slow[i - 1] && fast[i] > slow[i]) return 'long';
+  if (fast[i - 1] >= slow[i - 1] && fast[i] < slow[i]) return 'short';
+  return null;
+});
+return {
+  pane: 'overlay',
+  signals,
+  plots: [
+    { name: 'Fast', values: fast, color: '#f5a524' },
+    { name: 'Slow', values: slow, color: '#7c6cff' },
+  ],
+};`,
+  },
+  {
+    id: 'rsi-revert',
+    name: 'Strategy: RSI reversal',
+    strategy: true,
+    inputs: { length: 14, low: 30, high: 70 },
+    code: `const r = ta.rsi(ta.close(candles), inputs.length);
+// long when RSI climbs back above "low", short when it drops back below "high",
+// exit when RSI crosses 50 against the trade
+let side = null;
+const signals = r.map((v, i) => {
+  const p = r[i - 1];
+  if (v === null || p === null || p === undefined) return null;
+  if (p < inputs.low && v >= inputs.low) { side = 'long'; return 'long'; }
+  if (p > inputs.high && v <= inputs.high) { side = 'short'; return 'short'; }
+  if (side === 'long' && p >= 50 && v < 50) { side = null; return 'exit'; }
+  if (side === 'short' && p <= 50 && v > 50) { side = null; return 'exit'; }
+  return null;
+});
+return { pane: 'separate', levels: [inputs.low, 50, inputs.high], signals, plots: [{ name: 'RSI', values: r, color: '#7c6cff' }] };`,
+  },
   {
     id: 'atr',
     name: 'ATR',
@@ -95,5 +139,7 @@ return {
     { name: 'Upper', values: basis.map((b, i) => b === null ? null : b + 2 * dev[i]) },
   ],
   // levels: [30, 70],         // horizontal lines (separate pane only)
+  // Auto-trading: add one entry per candle: 'long' | 'short' | 'exit' | null
+  // signals: close.map((c, i) => (c > basis[i] + 2 * dev[i] ? 'short' : null)),
 };
 `;

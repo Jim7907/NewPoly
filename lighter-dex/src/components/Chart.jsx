@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CandlestickSeries, HistogramSeries, LineSeries, LineStyle, createChart } from 'lightweight-charts';
+import { CandlestickSeries, HistogramSeries, LineSeries, LineStyle, createChart, createSeriesMarkers } from 'lightweight-charts';
 import { useCandles } from '../lighter/useMarketData.js';
 import { RESOLUTIONS } from '../lighter/api.js';
-import { useIndicators } from '../indicators/useIndicators.js';
 import { runIndicator } from '../indicators/runner.js';
 import IndicatorsPanel from './IndicatorsPanel.jsx';
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const PALETTE = ['#f5a524', '#7c6cff', '#22b8cf', '#e64980', '#40c057', '#fd7e14', '#94d82d', '#be4bdb'];
 
-export default function Chart({ market }) {
+export default function Chart({ market, indicators }) {
   const el = useRef(null);
   const chartRef = useRef(null);
   const indSeriesRef = useRef([]);
@@ -18,7 +17,6 @@ export default function Chart({ market }) {
   const [results, setResults] = useState([]); // [{ indicator, result }]
   const [errors, setErrors] = useState({});
   const { data } = useCandles(market?.market_id ?? null, resolution);
-  const indicators = useIndicators();
 
   // ---- base chart ----
   useEffect(() => {
@@ -36,7 +34,8 @@ export default function Chart({ market }) {
     });
     const volume = chart.addSeries(HistogramSeries, { priceScaleId: 'vol', priceFormat: { type: 'volume' }, lastValueVisible: false, priceLineVisible: false });
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    chartRef.current = { chart, candles, volume };
+    const markers = createSeriesMarkers(candles, []);
+    chartRef.current = { chart, candles, volume, markers };
     return () => {
       chart.remove();
       chartRef.current = null;
@@ -122,6 +121,23 @@ export default function Chart({ market }) {
     }
     const panes = chart.panes();
     panes.forEach((p, i) => p.setStretchFactor(i === 0 ? 3 : 1));
+
+    // Strategy signals as arrows on the candles
+    const marks = [];
+    for (const { result } of results) {
+      if (!result.signals) continue;
+      result.signals.forEach((s, k) => {
+        if (!s || !data[k]) return;
+        marks.push(
+          s === 'long'
+            ? { time: data[k].time, position: 'belowBar', shape: 'arrowUp', color: css('--up'), text: 'L' }
+            : s === 'short'
+              ? { time: data[k].time, position: 'aboveBar', shape: 'arrowDown', color: css('--down'), text: 'S' }
+              : { time: data[k].time, position: 'aboveBar', shape: 'circle', color: css('--muted'), text: 'X' },
+        );
+      });
+    }
+    c.markers.setMarkers(marks.sort((a, b) => a.time - b.time));
   }, [results]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const legend = useMemo(

@@ -11,6 +11,8 @@ margin, liquidations and custody; this app is "just" the frontend — no backend
 - **History & PnL**: fills with realized PnL, win rate, per-market stats, PnL chart (7/30/90d), funding payments
 - **Indicators**: EMA, SMA, Bollinger, VWAP, RSI, MACD, Stochastic, ATR — plus **user-imported
   custom indicators** (paste or upload a script, share it, edit inputs)
+- **Auto-trading bot**: trades from any indicator script that outputs `signals` (incl. user-imported
+  ones). Paper mode by default, backtest preview, per-trade size, TP/SL, max trades/day, loss limit
 - **Telegram alerts**: price crosses and "position close to liquidation" warnings
 - **Phone layout**: bottom tabs (Chart / Book / Trade / Account), big buy/sell bar, position cards
 - Optional **integrator fee**: earn a cut of every trade routed through your frontend (earnings shown in Account tab)
@@ -76,6 +78,33 @@ return {
 `ta` has `sma ema rma wma stdev highest lowest change rsi macd bb atr vwap stoch` and
 `close/open/high/low/volume/hl2/hlc3(candles)`. Built-ins use the same format — "Copy as custom"
 is a quick way to start.
+
+### Auto-trading from an indicator
+
+Add a `signals` array (one entry per candle: `'long'`, `'short'`, `'exit'` or `null`) and the script
+can drive the bot (**Bot** tab). Signals also show as L/S arrows on the chart. Two examples ship
+built in: *Strategy: EMA cross* and *Strategy: RSI reversal*.
+
+```js
+const fast = ta.ema(ta.close(candles), inputs.fast), slow = ta.ema(ta.close(candles), inputs.slow);
+return {
+  pane: 'overlay',
+  plots: [{ name: 'Fast', values: fast }, { name: 'Slow', values: slow }],
+  signals: fast.map((f, i) => i && f > slow[i] && fast[i - 1] <= slow[i - 1] ? 'long'
+                         : i && f < slow[i] && fast[i - 1] >= slow[i - 1] ? 'short' : null),
+};
+```
+
+How the bot behaves (`src/autotrade/`):
+- Runs **in the user's browser** with their own key — nothing is stored on the server. It pauses if
+  the app is closed / phone locked (it requests a screen wake lock while running). TP/SL orders live
+  on Lighter, so open positions stay protected.
+- Acts only on **closed** candles, once per candle, and only on signals that appear **after** it
+  starts. `long`/`short` open or reverse; `exit` closes. Direction can be long-only / short-only.
+- Limits: size per trade ($), TP %/SL % per entry, max trades/day, stop after losing $X, stop after
+  3 errors in a row. Live mode needs an explicit confirmation and never auto-resumes after reload.
+- Manages the whole position on its market and cancels leftover TP/SL orders there before each entry.
+- The backtest (last 300 candles) fills at the next candle's open, unleveraged, no fees/funding.
 
 **Safety:** scripts run in a Web Worker, isolated from the page. They can't read `localStorage` (where
 the trading key is), touch the DOM or call the signer, and anything running longer than 2s is killed.
