@@ -1,0 +1,32 @@
+services:
+  web:
+    build: .
+    container_name: lighter-dex
+    restart: unless-stopped
+    ports:
+      - "3003:80"
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+  # HTTPS front (Let's Encrypt, automatic). Enabled by deploy.sh with `--profile https`.
+  # Mobile wallets need https; DOMAIN defaults to <vps-ip>.sslip.io (no DNS setup needed).
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: lighter-dex-caddy
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on: [web]
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

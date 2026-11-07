@@ -20,6 +20,23 @@ npm test                  # unit tests for price/size scaling & order building
 npm run build             # static site in build/ — deploy to Vercel/Netlify/Cloudflare Pages/S3
 ```
 
+## Deploy to a VPS (one command)
+
+On the VPS (works from a phone SSH app such as Termius/JuiceSSH):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jim7907/NewPoly/ccr-02956898-1rlsfk/lighter-dex/deploy.sh | bash
+```
+
+It installs Docker if needed, builds the site, and serves it with automatic HTTPS at
+`https://<vps-ip-with-dashes>.sslip.io` (no domain or DNS needed; mobile wallets require https).
+If ports 80/443 are already taken on the VPS it falls back to `http://<vps-ip>:3003`.
+Options: `NETWORK=mainnet`, `DOMAIN=trade.yourdomain.com`, `HTTPS=0` — e.g.
+`curl -fsSL …/deploy.sh | NETWORK=mainnet bash`. Re-run the same command to update.
+
+**On your phone:** open that URL inside your wallet app's built-in browser
+(MetaMask / Rabby / Coinbase Wallet → Browser), then tap **Connect wallet**.
+
 ## How it works
 
 ```
