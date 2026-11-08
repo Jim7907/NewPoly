@@ -687,7 +687,10 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
       const v = A(0);
       let p = out.plots.get(e.id);
       if (!p) {
-        p = { title: N('title', 1, null), color: null, style: N('style', 99, 'plot.style_line'), values: new Array(n).fill(null) };
+        // display.none / data_window / status_line plots are not drawn on the chart in TradingView either
+        const display = String(N('display', 99, 'display.all'));
+        const hidden = /^display\.(none|data_window|status_line|price_scale)$/.test(display);
+        p = { title: N('title', 1, null), color: null, style: N('style', 99, 'plot.style_line'), values: new Array(n).fill(null), hidden };
         out.plots.set(e.id, p);
       }
       const col = N('color', 2, null);
@@ -1137,7 +1140,7 @@ export function runPine(source, candles, inputValues = {}, opts = {}) {
     }
   }
 
-  const plots = [...out.plots.values()].map((p, i) => ({
+  const plots = [...out.plots.values()].filter((p) => !p.hidden).map((p, i) => ({
     name: p.title ?? `Plot ${i + 1}`,
     color: p.color && /^(#|rgb)/.test(p.color) ? p.color : null,
     type: /histogram|columns|area/.test(String(p.style)) ? 'histogram' : 'line',

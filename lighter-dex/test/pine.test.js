@@ -327,3 +327,11 @@ plot(c.get(0) == close ? 1 : 0)
 plot(c2.size())`, C, {}, { resolution: '15m' });
   assert.deepEqual(r.plots.map((p) => p.values.at(-1)), [5000, 1, 1, 0]);
 });
+
+test('plots with display = display.data_window / display.none are not drawn', () => {
+  const r = runPine(`indicator("d", overlay=true)
+plot(close, "Price")
+plot(1.0, "Size", display = display.data_window)
+plot(0.0, "Hidden", display = display.none)`, C);
+  assert.deepEqual(r.plots.map((p) => p.name), ['Price']);
+});
