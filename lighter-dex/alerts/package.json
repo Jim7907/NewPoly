@@ -1,0 +1,7 @@
+{
+  "name": "lighter-dex-alerts",
+  "private": true,
+  "type": "module",
+  "description": "Telegram price & liquidation alerts for lighter-dex (no dependencies)",
+  "scripts": { "start": "node server.js" }
+}
